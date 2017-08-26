@@ -20,7 +20,7 @@ jobs:
             - node_modules
       - persist_to_workspace:
           root: ~/project
-          path:
+          paths:
             - app
   test:
     <<: *defaults
