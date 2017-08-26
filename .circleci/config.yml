@@ -44,6 +44,22 @@ jobs:
       - store_artifacts:
           path: artifacts/
           destination: yarnpkg
+  build:
+    <<: *defaults
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/project
+      - run:
+          name: Build distribution
+          command: |
+            node -v
+            if [ "$CIRCLE_BRANCH" == 'master' ]; then
+              ./scripts/set-dev-version.js
+            fi;
+            yarn build-dist
+            node ./scripts/build-webpack.js
+            ./scripts/build-deb.sh
   deploy:
     <<: *defaults
     steps:
@@ -75,6 +91,10 @@ workflows:
       - test:
           requires:
             - install
+      - build:
+          requires:
+            - install
       - deploy:
           requires:
             - test
+            - build
