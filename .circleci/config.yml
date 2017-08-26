@@ -1,11 +1,11 @@
 defaults: &defaults
-  working_directory: /tmp/yarn
+  working_directory: ~/project/yarn
   docker:
     - image: yarnpkg/dev:latest
 
 version: 2
 jobs:
-  build:
+  install:
     <<: *defaults
     steps:
       - checkout
@@ -17,9 +17,9 @@ jobs:
       - save_cache:
           key: yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
           paths:
-            - ~/.cache/yarn
+            - node_modules
       - persist_to_workspace:
-          root: /tmp/yarn
+          root: ~/project
           path:
             - yarn
   test:
@@ -27,7 +27,7 @@ jobs:
     steps:
       - checkout
       - attach_workspace:
-          at: /tmp/yarn
+          at: ~/project
       - run:
           name: Tests
           command: |
@@ -49,7 +49,7 @@ jobs:
     steps:
       - checkout
       - attach_workspace:
-          at: /tmp/yarn
+          at: ~/project
       - run:
           name: Deploy
           command: |
@@ -71,10 +71,10 @@ workflows:
   version: 2
   build-test-and-deploy:
     jobs:
-      - build
+      - install
       - test:
           requires:
-            - build
+            - install
       - deploy:
           requires:
             - test
