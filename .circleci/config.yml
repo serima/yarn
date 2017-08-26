@@ -1,5 +1,5 @@
 defaults: &defaults
-  working_directory: ~/yarn
+  working_directory: /root/working_directory
   docker:
     - image: yarnpkg/dev:latest
 
@@ -18,10 +18,15 @@ jobs:
           key: yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
           paths:
             - "~/.yarn-cache"
+      - persist_to_workspace:
+          root: /root
+          path:
+            - working_directory
   test:
     <<: *defaults
     steps:
-      - checkout
+      - attach_workspace:
+          at: /root
       - run:
           name: Tests
           command: |
