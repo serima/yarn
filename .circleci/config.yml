@@ -38,6 +38,8 @@ jobs:
             yarn lint
             yarn test-ci -- -- --maxWorkers 3
             yarn check-lockfile
+      - store_test_results:
+          path: test_result/
   build:
     <<: *defaults
     steps:
@@ -79,7 +81,7 @@ notify:
     - url: https://nightly.yarnpkg.com/release_circleci
     # Handles archiving all builds onto the nightly build site
     - url: https://nightly.yarnpkg.com/archive_circleci
-    - url: https://hooks.slack.com/services/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
+    - url: https://webhooks.gitter.im/e/d38143b450b6fe53f3c9
 
 workflows:
   version: 2
