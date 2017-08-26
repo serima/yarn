@@ -1,9 +1,12 @@
+defaults: &defaults
+  working_directory: ~/yarn
+  docker:
+    - image: yarnpkg/dev:latest
+
 version: 2
 jobs:
   build:
-    docker:
-      - image: yarnpkg/dev:latest
-    working_directory: ~/yarn
+    <<: *defaults
     steps:
       - checkout
       - restore_cache:
@@ -16,9 +19,7 @@ jobs:
           paths:
             - "~/.yarn-cache"
   test:
-    docker:
-      - image: yarnpkg/dev:latest
-    working_directory: ~/yarn
+    <<: *defaults
     steps:
       - checkout
       - run:
@@ -38,9 +39,7 @@ jobs:
           path: artifacts/
           destination: yarnpkg
   deploy:
-    docker:
-      - image: yarnpkg/dev:latest
-    working_directory: ~/yarn
+    <<: *defaults
     steps:
       - checkout
       - run:
