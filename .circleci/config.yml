@@ -17,7 +17,7 @@ jobs:
       - save_cache:
           key: yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
           paths:
-            - node_modules
+            - .cache/yarn
       - persist_to_workspace:
           root: ~/project
           paths:
