@@ -1,5 +1,5 @@
 defaults: &defaults
-  working_directory: ~/project/yarn
+  working_directory: ~/project/app
   docker:
     - image: yarnpkg/dev:latest
 
@@ -21,7 +21,7 @@ jobs:
       - persist_to_workspace:
           root: ~/project
           path:
-            - yarn
+            - app
   test:
     <<: *defaults
     steps:
