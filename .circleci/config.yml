@@ -79,6 +79,7 @@ notify:
     - url: https://nightly.yarnpkg.com/release_circleci
     # Handles archiving all builds onto the nightly build site
     - url: https://nightly.yarnpkg.com/archive_circleci
+    - url: https://hooks.slack.com/services/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
 
 workflows:
   version: 2
