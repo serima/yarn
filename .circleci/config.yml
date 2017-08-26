@@ -69,7 +69,7 @@ notify:
 
 workflows:
   version: 2
-  build-test-and-deploy:
+  install-test-and-deploy:
     jobs:
       - install
       - test:
