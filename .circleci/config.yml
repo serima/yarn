@@ -38,9 +38,6 @@ jobs:
             yarn lint
             yarn test-ci -- -- --maxWorkers 3
             yarn check-lockfile
-            yarn build-dist
-            node ./scripts/build-webpack.js
-            ./scripts/build-deb.sh
       - store_artifacts:
           path: artifacts/
           destination: yarnpkg
@@ -85,7 +82,7 @@ notify:
 
 workflows:
   version: 2
-  install-test-and-deploy:
+  install-test-build-and-deploy:
     jobs:
       - install
       - test:
