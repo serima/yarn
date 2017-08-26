@@ -3,7 +3,7 @@ jobs:
   build:
     docker:
       - image: yarnpkg/dev:latest
-    working_directory: /home/ubuntu/yarn
+    working_directory: ~/yarn
     steps:
       - checkout
       - restore_cache:
@@ -11,6 +11,16 @@ jobs:
       - run:
           name: Install Dependencies
           command: yarn install
+      - save_cache:
+          key: yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
+          paths:
+            - "~/.yarn-cache"
+  test:
+    docker:
+      - image: yarnpkg/dev:latest
+    working_directory: ~/yarn
+    steps:
+      - checkout
       - run:
           name: Tests
           command: |
@@ -24,14 +34,16 @@ jobs:
             yarn build-dist
             node ./scripts/build-webpack.js
             ./scripts/build-deb.sh
-      - save_cache:
-          key: yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
-          paths:
-            - "~/.yarn-cache"
       - store_artifacts:
           path: artifacts/
           destination: yarnpkg
-      - deploy:
+  deploy:
+    docker:
+      - image: yarnpkg/dev:latest
+    working_directory: ~/yarn
+    steps:
+      - checkout
+      - run:
           name: Deploy
           command: |
             if [ "${CIRCLE_PROJECT_USERNAME}" == "yarnpkg" ]; then
@@ -47,3 +59,15 @@ notify:
     - url: https://nightly.yarnpkg.com/release_circleci
     # Handles archiving all builds onto the nightly build site
     - url: https://nightly.yarnpkg.com/archive_circleci
+
+workflows:
+  version: 2
+  build-test-and-deploy:
+    jobs:
+      - build
+      - test:
+          requires:
+            - build
+      - deploy:
+          requires:
+            - test
