@@ -69,20 +69,13 @@ jobs:
           name: Deploy
           command: |
             # Only NPM is handled here - All other release files are handled in a webhook.
-            if [ "${CIRCLE_PROJECT_USERNAME}" == "yarnpkg" ]; then
+            if [ "${CIRCLE_PROJECT_USERNAME}" == "serima" ]; then # serima!
               if git log -1 --pretty=%B | grep "^v[0-9]\+\.[0-9]\+\.[0-9]\+$"; then
                 echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
                 ./scripts/set-installation-method.js "`pwd`/package.json" npm
                 npm publish --tag rc
               fi
             fi
-
-notify:
-  webhooks:
-    # Handles uploading stable/RC releases to GitHub
-    - url: https://nightly.yarnpkg.com/release_circleci
-    # Handles archiving all builds onto the nightly build site
-    - url: https://nightly.yarnpkg.com/archive_circleci
 
 workflows:
   version: 2
