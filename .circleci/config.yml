@@ -40,7 +40,7 @@ jobs:
             # Limit maxWorkers to 3 to avoid OOM on CircleCI
             yarn test-ci -- -- --maxWorkers 3
             yarn check-lockfile
-  build:
+  build_and_deploy:
     <<: *defaults
     steps:
       - checkout
@@ -58,12 +58,6 @@ jobs:
       - store_artifacts:
           path: artifacts/
           destination: yarnpkg
-  deploy:
-    <<: *defaults
-    steps:
-      - checkout
-      - attach_workspace:
-          at: ~/project
       - run:
           name: Deploy
           command: |
@@ -85,10 +79,6 @@ workflows:
       - test:
           requires:
             - install
-      - build:
-          requires:
-            - install
-      - deploy:
+      - build_and_deploy:
           requires:
             - test
-            - build
