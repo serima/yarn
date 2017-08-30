@@ -1,7 +1,7 @@
 {
   "name": "serima-yarn",
   "installationMethod": "unknown",
-  "version": "1.0.0",
+  "version": "0.29.1",
   "license": "BSD-2-Clause",
   "preferGlobal": true,
   "description": "📦🐈 Fast, reliable, and secure dependency management.",
