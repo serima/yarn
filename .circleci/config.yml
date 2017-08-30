@@ -54,7 +54,6 @@ jobs:
               ./scripts/set-dev-version.js
             fi;
             yarn build-dist
-            node ./scripts/build-webpack.js
             ./scripts/build-deb.sh
       - store_artifacts:
           path: artifacts/

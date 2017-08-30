@@ -1,5 +1,5 @@
 {
-  "name": "yarn",
+  "name": "serima-yarn",
   "installationMethod": "unknown",
   "version": "1.0.0",
   "license": "BSD-2-Clause",
@@ -88,7 +88,7 @@
   "engines": {
     "node": ">=4.0.0"
   },
-  "repository": "yarnpkg/yarn",
+  "repository": "serima/yarn",
   "bin": {
     "yarn": "./bin/yarn.js",
     "yarnpkg": "./bin/yarn.js"
