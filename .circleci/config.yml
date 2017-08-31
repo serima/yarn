@@ -58,7 +58,10 @@ jobs:
       - store_artifacts:
           path: artifacts/
           destination: yarnpkg
-
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - yarn
   deploy:
     <<: *defaults
     steps:
