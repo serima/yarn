@@ -58,14 +58,25 @@ jobs:
       - store_artifacts:
           path: artifacts/
           destination: yarnpkg
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - yarn
+  deploy:
+    <<: *defaults
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/project
       - run:
           name: Deploy
           command: |
             # Only NPM is handled here - All other release files are handled in a webhook.
-            if [ "${CIRCLE_PROJECT_USERNAME}" == "serima" ]; then # serima!
-              echo 'match serima'
-              if git describe --tags --abbrev=0 `git rev-parse HEAD` | grep "^v[0-9]\+\.[0-9]\+\.[0-9]\+$"; then
-                echo 'tag ok'
+            echo "CIRCLE_PROJECT_USERNAME is ${CIRCLE_PROJECT_USERNAME}"
+            if [ "${CIRCLE_PROJECT_USERNAME}" == "serima" ]; then
+              echo "CIRCLE_TAG is ${CIRCLE_TAG}"
+              if echo "${CIRCLE_TAG}" | grep "^v[0-9]\+\.[0-9]\+\.[0-9]\+$"; then
+                echo "CIRCLE_TAG grep passed."
                 echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
                 ./scripts/update-npm.sh
               fi
