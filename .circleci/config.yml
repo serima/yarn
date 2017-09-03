@@ -40,7 +40,7 @@ jobs:
             # Limit maxWorkers to 3 to avoid OOM on CircleCI
             yarn test-ci -- -- --maxWorkers 3
             yarn check-lockfile
-  build:
+  build_and_deploy:
     <<: *defaults
     steps:
       - checkout
@@ -82,13 +82,6 @@ jobs:
               fi
             fi
 
-notify:
-  webhooks:
-    # Handles uploading stable/RC releases to GitHub
-    - url: https://nightly.yarnpkg.com/release_circleci
-    # Handles archiving all builds onto the nightly build site
-    - url: https://nightly.yarnpkg.com/archive_circleci
-
 workflows:
   version: 2
   install-test-build-and-deploy:
@@ -97,10 +90,6 @@ workflows:
       - test:
           requires:
             - install
-      - build:
-          requires:
-            - install
-      - deploy:
+      - build_and_deploy:
           requires:
             - test
-            - build
