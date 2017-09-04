@@ -77,11 +77,8 @@ jobs:
             echo "CIRCLE_PROJECT_USERNAME is ${CIRCLE_PROJECT_USERNAME}"
             if [ "${CIRCLE_PROJECT_USERNAME}" == "serima" ]; then
               echo "CIRCLE_TAG is ${CIRCLE_TAG}"
-              if echo "${CIRCLE_TAG}" | grep "^v[0-9]\+\.[0-9]\+\.[0-9]\+$"; then
-                echo "CIRCLE_TAG grep passed."
-                echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-                ./scripts/update-npm.sh
-              fi
+              echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+              ./scripts/update-npm.sh
             fi
 
 workflows:
@@ -99,3 +96,6 @@ workflows:
           requires:
             - test
             - build
+          filters:
+            tags:
+              only: /^v[0-9]\+\.[0-9]\+\.[0-9]\+$/
