@@ -9,6 +9,8 @@ jobs:
   install:
     <<: *defaults
     steps:
+      - run: echo "CIRCLE_PROJECT_USERNAME is ${CIRCLE_PROJECT_USERNAME}"
+      - run: echo "CIRCLE_TAG is ${CIRCLE_TAG}"
       - checkout
       - restore_cache:
           key: yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
