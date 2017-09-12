@@ -7,7 +7,7 @@ defaults: &defaults
 
 default_filters: &default_filters
   tags:
-    only: '/^v[0-9]\+\.[0-9]\+\.[0-9]\+$/'
+    only: '/serima/'
 
 jobs:
   install:
