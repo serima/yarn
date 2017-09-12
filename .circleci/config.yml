@@ -75,13 +75,14 @@ jobs:
       - run:
           name: Deploy
           command: |
+            echo 'deploy!'
             # Only NPM is handled here - All other release files are handled in a webhook.
-            if [ "${CIRCLE_PROJECT_USERNAME}" == "yarnpkg" ]; then
-              if git describe --tags --abbrev=0 `git rev-parse HEAD` | grep "^v[0-9]\+\.[0-9]\+\.[0-9]\+$"; then
-                echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-                ./scripts/update-npm.sh
-              fi
-            fi
+            #if [ "${CIRCLE_PROJECT_USERNAME}" == "yarnpkg" ]; then
+            #  if git describe --tags --abbrev=0 `git rev-parse HEAD` | grep "^v[0-9]\+\.[0-9]\+\.[0-9]\+$"; then
+            #    echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+            #    ./scripts/update-npm.sh
+            #  fi
+            #fi
 
 notify:
   webhooks:
