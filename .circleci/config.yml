@@ -26,6 +26,9 @@ jobs:
           key: v1-yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
           paths:
             - .cache/yarn
+      - run:
+          name: Remove node_modules to cleanup workspace
+          command: rm -r node_modules/
       - persist_to_workspace:
           root: ~/project
           paths:
@@ -35,6 +38,12 @@ jobs:
     steps:
       - attach_workspace:
           at: ~/project
+      - restore_cache:
+          name: Restore node_modules cache
+          keys:
+            - v1-yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
+            - v1-yarn-{{ .Branch }}-
+            - v1-yarn-
       - run:
           name: Tests
           command: |
@@ -50,6 +59,12 @@ jobs:
     steps:
       - attach_workspace:
           at: ~/project
+      - restore_cache:
+          name: Restore node_modules cache
+          keys:
+            - v1-yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
+            - v1-yarn-{{ .Branch }}-
+            - v1-yarn-
       - run:
           name: Lint
           command: yarn lint
@@ -58,6 +73,12 @@ jobs:
     steps:
       - attach_workspace:
           at: ~/project
+      - restore_cache:
+          name: Restore node_modules cache
+          keys:
+            - v1-yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
+            - v1-yarn-{{ .Branch }}-
+            - v1-yarn-
       - run:
           name: Build distribution
           command: |
@@ -79,6 +100,12 @@ jobs:
     steps:
       - attach_workspace:
           at: ~/project
+      - restore_cache:
+          name: Restore node_modules cache
+          keys:
+            - v1-yarn-{{ .Branch }}-{{ checksum "yarn.lock" }}
+            - v1-yarn-{{ .Branch }}-
+            - v1-yarn-
       - run:
           name: Deploy
           command: |
