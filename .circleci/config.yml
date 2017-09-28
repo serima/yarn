@@ -3,7 +3,7 @@ version: 2
 defaults: &defaults
   working_directory: ~/project/yarn
   docker:
-    - image: yarnpkg/dev:latest
+    - image: serima/yarnpkg-node8:latest
 
 default_filters: &default_filters
   tags:
