@@ -18,7 +18,8 @@ const messages = {
   usage: 'Usage',
   installCommandRenamed: '`install` has been replaced with `add` to add new dependencies. Run $0 instead.',
   globalFlagRemoved: '`--global` has been deprecated. Please run $0 instead.',
-  waitingInstance: 'Waiting for the other yarn instance to finish',
+  waitingInstance: 'Waiting for the other yarn instance to finish (pid $0, inside $1)',
+  waitingNamedInstance: 'Waiting for the other yarn instance to finish ($0)',
   offlineRetrying: 'There appears to be trouble with your network connection. Retrying...',
   clearedCache: 'Cleared cache.',
   couldntClearPackageFromCache: "Couldn't clear package $0 from cache",
@@ -68,6 +69,7 @@ const messages = {
   couldntFindVersionThatMatchesRange: "Couldn't find any versions for $0 that matches $1",
   chooseVersionFromList: 'Please choose a version of $0 from this list:',
   moduleNotInManifest: "This module isn't specified in a manifest.",
+  moduleAlreadyInManifest: '$0 is already in $1. Please remove existing entry first before adding it to $2.',
   unknownFolderOrTarball: "Passed folder/tarball doesn't exist,",
   unknownPackage: "Couldn't find package $0.",
   unknownPackageName: "Couldn't find package name.",
@@ -109,8 +111,9 @@ const messages = {
   unexpectedError: 'An unexpected error occurred: $0.',
   jsonError: 'Error parsing JSON at $0, $1.',
   noPermission: 'Cannot create $0 due to insufficient permissions.',
+  noGlobalFolder: 'Cannot find a suitable global folder. Tried these: $0',
   allDependenciesUpToDate: 'All of your dependencies are up to date.',
-  legendColorsForUpgradeInteractive:
+  legendColorsForVersionUpdates:
     'Color legend : \n $0    : Major Update backward-incompatible updates \n $1 : Minor Update backward-compatible features \n $2  : Patch Update backward-compatible bug fixes',
   frozenLockfileError: 'Your lockfile needs to be updated, but yarn was run with `--frozen-lockfile`.',
   fileWriteError: 'Could not write file $0: $1',
@@ -149,6 +152,13 @@ const messages = {
 
   cleaning: 'Cleaning modules',
   cleanCreatingFile: 'Creating $0',
+  cleanCreatedFile:
+    'Created $0. Please review the contents of this file then run "yarn autoclean --force" to perform a clean.',
+  cleanAlreadyExists: '$0 already exists. To revert to the default file, delete $0 then rerun this command.',
+  cleanRequiresForce:
+    'This command required the "--force" flag to perform the clean. This is a destructive operation. Files specified in $0 will be deleted.',
+  cleanDoesNotExist:
+    '$0 does not exist. Autoclean will delete files specified by $0. Run "autoclean --init" to create $0 with the default entries.',
 
   binLinkCollision:
     "There's already a linked binary called $0 in your global Yarn bin. Could not link this package's $0 bin entry.",
@@ -163,13 +173,14 @@ const messages = {
   linkUsing: 'Using linked module for $0.',
   linkDisusing: 'Removed linked module $0.',
   linkDisusingMessage: 'You will need to run `yarn` to re-install the package that was linked.',
+  linkTargetMissing: 'The target of linked module $0 is missing. Removing link.',
 
   createInvalidBin: 'Invalid bin entry found in package $0.',
   createMissingPackage:
     'Package not found - this is probably an internal error, and should be reported at https://github.com/yarnpkg/yarn/issues.',
 
-  workspacesPreferDevDependencies:
-    "You're trying to add a regular dependency to a workspace root, which is probably a mistake (do you want to run this command inside a workspace?). If this dependency really should be in your workspace root, use the --dev flag to add it to your devDependencies.",
+  workspacesAddRootCheck:
+    'Running this command will add the dependency to the workspace root rather than workspace itself, which might not be what you want - if you really meant it, make it explicit by running this command again with the -W flag (or --ignore-workspace-root-check).',
   workspacesRequirePrivateProjects: 'Workspaces can only be enabled in private projects',
   workspacesDisabled:
     'Your project root defines workspaces but the feature is disabled in your Yarn config. Please check "workspaces-experimental" in your .yarnrc file.',
@@ -188,6 +199,8 @@ const messages = {
 
   execMissingCommand: 'Missing command name.',
 
+  noScriptsAvailable: 'There are no scripts specified inside package.json.',
+  noBinAvailable: 'There are no binary scripts available.',
   dashDashDeprecation: `From Yarn 1.0 onwards, scripts don't require "--" for options to be forwarded. In a future version, any explicit "--" will be forwarded as-is to the scripts.`,
   commandNotSpecified: 'No command specified.',
   binCommands: 'Commands available from binary scripts: ',
@@ -214,6 +227,7 @@ const messages = {
 
   unmetPeer: '$0 has unmet peer dependency $1.',
   incorrectPeer: '$0 has incorrect peer dependency $1.',
+  selectedPeer: 'Selecting $1 at level $2 as the peer dependency of $0.',
   missingBundledDependency: '$0 is missing a bundled dependency $1. This should be reported to the package maintainer.',
 
   savedNewDependency: 'Saved 1 new dependency.',
@@ -302,7 +316,8 @@ const messages = {
   requestError: 'Request $0 returned a $1',
   requestFailed: 'Request failed $0',
   tarballNotInNetworkOrCache: '$0: Tarball is not in network and can not be located in cache ($1)',
-  fetchBadHashWithPath: "Hashes don't match when extracting file $0. Expected $1 but got $2",
+  fetchBadHashWithPath:
+    'Fetch succeeded for $0. However, extracting $1 resulted in hash $2, which did not match the requested hash $3.',
   fetchErrorCorrupt:
     '$0. Mirror tarball appears to be corrupt. You can resolve this by running:\n\n  rm -rf $1\n  yarn install',
   errorDecompressingTarball: '$0. Error decompressing $1, it appears to be corrupt.',
@@ -348,8 +363,16 @@ const messages = {
   scopeNotValid: 'The specified scope is not valid.',
 
   deprecatedCommand: '$0 is deprecated. Please use $1.',
+  deprecatedListArgs: 'Filtering by arguments is deprecated. Please use the pattern option instead.',
   implicitFileDeprecated:
-    'Using the "file:" protocol implicitly is deprecated. Please either the protocol or prepend the path $0 with "./".',
+    'Using the "file:" protocol implicitly is deprecated. Please either prepend the protocol or prepend the path $0 with "./".',
+  unsupportedNodeVersion:
+    'You are using Node $0 which is not supported and may encounter bugs or unexpected behavior. Yarn supports the following semver range: $1',
+
+  verboseUpgradeBecauseRequested: 'Considering upgrade of $0 to $1 because it was directly requested.',
+  verboseUpgradeBecauseOutdated: 'Considering upgrade of $0 to $1 because a newer version exists in the registry.',
+  verboseUpgradeNotUnlocking: 'Not unlocking $0 in the lockfile because it is a new or direct dependency.',
+  verboseUpgradeUnlocking: 'Unlocking $0 in the lockfile.',
 };
 
 export type LanguageKeys = $Keys<typeof messages>;

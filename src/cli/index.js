@@ -1,5 +1,17 @@
 /* @flow */
 
+import http from 'http';
+import net from 'net';
+import path from 'path';
+
+import commander from 'commander';
+import fs from 'fs';
+import invariant from 'invariant';
+import lockfile from 'proper-lockfile';
+import loudRejection from 'loud-rejection';
+import onDeath from 'death';
+import semver from 'semver';
+
 import {ConsoleReporter, JSONReporter} from '../reporters/index.js';
 import {registries, registryNames} from '../registries/index.js';
 import commands from './commands/index.js';
@@ -11,15 +23,6 @@ import {getRcConfigForCwd, getRcArgs} from '../rc.js';
 import {spawnp, forkp} from '../util/child.js';
 import {version} from '../util/yarn-version.js';
 import handleSignals from '../util/signal-handler.js';
-
-const commander = require('commander');
-const fs = require('fs');
-const invariant = require('invariant');
-const lockfile = require('proper-lockfile');
-const loudRejection = require('loud-rejection');
-const net = require('net');
-const onDeath = require('death');
-const path = require('path');
 
 function findProjectRoot(base: string): string {
   let prev = null;
@@ -37,6 +40,16 @@ function findProjectRoot(base: string): string {
   return base;
 }
 
+const boolify = val => val.toString().toLowerCase() !== 'false' && val !== '0';
+
+function boolifyWithDefault(val: any, defaultResult: boolean): boolean {
+  if (val === undefined || val === null || val === '') {
+    return defaultResult;
+  } else {
+    return boolify(val);
+  }
+}
+
 export function main({
   startArgs,
   args,
@@ -50,9 +63,9 @@ export function main({
   handleSignals();
 
   // set global options
-  commander.version(version, '--version');
+  commander.version(version, '-v, --version');
   commander.usage('[command] [flags]');
-  commander.option('-v, --verbose', 'output verbose messages on internal operations');
+  commander.option('--verbose', 'output verbose messages on internal operations');
   commander.option('--offline', 'trigger an error if any required dependencies are not available in local cache');
   commander.option('--prefer-offline', 'use network only if dependencies are not available in local cache');
   commander.option('--strict-semver');
@@ -67,10 +80,11 @@ export function main({
   commander.option('--check-files', 'install will verify file tree of packages for consistency');
   commander.option('--no-bin-links', "don't generate bin links when setting up packages");
   commander.option('--flat', 'only allow one version of a package');
-  commander.option('--prod, --production [prod]', '');
+  commander.option('--prod, --production [prod]', '', boolify);
   commander.option('--no-lockfile', "don't read or generate a lockfile");
   commander.option('--pure-lockfile', "don't generate a lockfile");
   commander.option('--frozen-lockfile', "don't generate a lockfile and fail if an update is needed");
+  commander.option('--update-checksums', 'update package checksums from current repository');
   commander.option('--link-duplicates', 'create hardlinks to the repeated modules in node_modules');
   commander.option('--link-folder <path>', 'specify a custom folder to store global links');
   commander.option('--global-folder <path>', 'specify a custom folder to store global packages');
@@ -81,62 +95,93 @@ export function main({
   commander.option('--preferred-cache-folder <path>', 'specify a custom folder to store the yarn cache if possible');
   commander.option('--cache-folder <path>', 'specify a custom folder that must be used to store the yarn cache');
   commander.option('--mutex <type>[:specifier]', 'use a mutex to ensure only one yarn instance is executing');
-  commander.option('--emoji [bool]', 'enable emoji in output', process.platform === 'darwin');
+  commander.option('--emoji [bool]', 'enable emoji in output', boolify, process.platform === 'darwin');
   commander.option('-s, --silent', 'skip Yarn console logs, other types of logs (script output) will be printed');
   commander.option('--cwd <cwd>', 'working directory to use', process.cwd());
   commander.option('--proxy <host>', '');
   commander.option('--https-proxy <host>', '');
+  commander.option('--registry <url>', 'override configuration registry');
   commander.option('--no-progress', 'disable progress bar');
   commander.option('--network-concurrency <number>', 'maximum number of concurrent network requests', parseInt);
   commander.option('--network-timeout <milliseconds>', 'TCP timeout for network requests', parseInt);
   commander.option('--non-interactive', 'do not show interactive prompts');
-  commander.option('--scripts-prepend-node-path [bool]', 'prepend the node executable dir to the PATH in scripts');
-
-  // get command name
-  let commandName: string = args.shift() || 'install';
+  commander.option(
+    '--scripts-prepend-node-path [bool]',
+    'prepend the node executable dir to the PATH in scripts',
+    boolify,
+  );
+  commander.option('--no-node-version-check', 'do not warn when using a potentially unsupported Node version');
 
   // if -v is the first command, then always exit after returning the version
-  if (commandName === '-v') {
+  if (args[0] === '-v') {
     console.log(version.trim());
     process.exitCode = 0;
     return;
   }
 
-  if (commandName === '--help' || commandName === '-h') {
-    commandName = 'help';
+  // get command name
+  const firstNonFlagIndex = args.findIndex((arg, idx, arr) => {
+    const isOption = arg.startsWith('-');
+    const prev = idx > 0 && arr[idx - 1];
+    const prevOption = prev && prev.startsWith('-') && commander.optionFor(prev);
+    const boundToPrevOption = prevOption && (prevOption.optional || prevOption.required);
+
+    return !isOption && !boundToPrevOption;
+  });
+  let preCommandArgs;
+  let commandName = '';
+  if (firstNonFlagIndex > -1) {
+    preCommandArgs = args.slice(0, firstNonFlagIndex);
+    commandName = args[firstNonFlagIndex];
+    args = args.slice(firstNonFlagIndex + 1);
+  } else {
+    preCommandArgs = args;
+    args = [];
   }
 
-  if (args.indexOf('--help') >= 0 || args.indexOf('-h') >= 0) {
-    args.unshift(commandName);
+  let isKnownCommand = Object.prototype.hasOwnProperty.call(commands, commandName);
+  const isHelp = arg => arg === '--help' || arg === '-h';
+  const helpInPre = preCommandArgs.findIndex(isHelp);
+  const helpInArgs = args.findIndex(isHelp);
+  const setHelpMode = () => {
+    if (isKnownCommand) {
+      args.unshift(commandName);
+    }
     commandName = 'help';
+    isKnownCommand = true;
+  };
+
+  if (helpInPre > -1) {
+    preCommandArgs.splice(helpInPre);
+    setHelpMode();
+  } else if (isKnownCommand && helpInArgs === 0) {
+    args.splice(helpInArgs);
+    setHelpMode();
   }
 
-  // if no args or command name looks like a flag then set default to `install`
-  if (commandName[0] === '-') {
-    args.unshift(commandName);
+  if (!commandName) {
     commandName = 'install';
+    isKnownCommand = true;
   }
 
-  let command;
-  if (Object.prototype.hasOwnProperty.call(commands, commandName)) {
-    command = commands[commandName];
-  }
-
-  // if command is not recognized, then set default to `run`
-  if (!command) {
+  if (!isKnownCommand) {
+    // if command is not recognized, then set default to `run`
     args.unshift(commandName);
-    command = commands.run;
+    commandName = 'run';
   }
+  const command = commands[commandName];
 
   let warnAboutRunDashDash = false;
   // we are using "yarn <script> -abc" or "yarn run <script> -abc", we want -abc to be script options, not yarn options
-  if (command === commands.run) {
+  if (command === commands.run || command === commands.create) {
     if (endArgs.length === 0) {
       endArgs = ['--', ...args.splice(1)];
     } else {
       warnAboutRunDashDash = true;
     }
   }
+
+  args = [...preCommandArgs, ...args];
 
   command.setFlags(commander);
   commander.parse([
@@ -160,22 +205,32 @@ export function main({
     emoji: process.stdout.isTTY && commander.emoji,
     verbose: commander.verbose,
     noProgress: !commander.progress,
-    isSilent: process.env.YARN_SILENT === '1' || commander.silent,
+    isSilent: boolifyWithDefault(process.env.YARN_SILENT, false) || commander.silent,
   });
+
+  const exit = exitCode => {
+    process.exitCode = exitCode || 0;
+    reporter.close();
+  };
 
   reporter.initPeakMemoryCounter();
 
   const config = new Config(reporter);
-  const outputWrapper = !commander.json && command.hasWrapper(commander, commander.args);
+  const outputWrapperEnabled = boolifyWithDefault(process.env.YARN_WRAP_OUTPUT, true);
+  const shouldWrapOutput = outputWrapperEnabled && !commander.json && command.hasWrapper(commander, commander.args);
 
-  if (outputWrapper) {
+  if (shouldWrapOutput) {
     reporter.header(commandName, {name: 'yarn', version});
+  }
+
+  if (commander.nodeVersionCheck && !semver.satisfies(process.versions.node, constants.SUPPORTED_NODE_VERSIONS)) {
+    reporter.warn(reporter.lang('unsupportedNodeVersion', process.versions.node, constants.SUPPORTED_NODE_VERSIONS));
   }
 
   if (command.noArguments && commander.args.length) {
     reporter.error(reporter.lang('noArguments'));
     reporter.info(command.getDocsInfo);
-    process.exitCode = 1;
+    exit(1);
     return;
   }
 
@@ -190,13 +245,6 @@ export function main({
   }
 
   //
-  if (command.requireLockfile && !fs.existsSync(path.join(config.cwd, constants.LOCKFILE_FILENAME))) {
-    reporter.error(reporter.lang('noRequiredLockfile'));
-    process.exitCode = 1;
-    return;
-  }
-
-  //
   const run = (): Promise<void> => {
     invariant(command, 'missing command');
 
@@ -205,7 +253,7 @@ export function main({
     }
 
     return command.run(config, reporter, commander, commander.args).then(exitCode => {
-      if (outputWrapper) {
+      if (shouldWrapOutput) {
         reporter.footer(false);
       }
       return exitCode;
@@ -234,68 +282,129 @@ export function main({
     });
   };
 
-  //
   const runEventuallyWithNetwork = (mutexPort: ?string): Promise<void> => {
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
       const connectionOptions = {
         port: +mutexPort || constants.SINGLE_INSTANCE_PORT,
       };
 
-      const clients = new Set();
-      const server = net.createServer();
+      function startServer() {
+        const clients = new Set();
+        const server = http.createServer(manager);
 
-      server.on('error', () => {
-        // another Yarn instance exists, let's connect to it to know when it dies.
-        reporter.warn(reporter.lang('waitingInstance'));
-        const socket = net.createConnection(connectionOptions);
+        // The server must not prevent us from exiting
+        server.unref();
 
-        socket
-          .on('connect', () => {
-            // Allow the program to exit if this is the only active server in the event system.
-            socket.unref();
-          })
-          .on('close', (hadError?: boolean) => {
-            // the `close` event gets always called after the `error` event
-            if (!hadError) {
-              process.nextTick(() => {
-                resolve(runEventuallyWithNetwork(mutexPort));
-              });
-            }
-          })
-          .on('error', () => {
-            // No server to listen to ? Let's retry to become the next server then.
-            process.nextTick(() => {
-              resolve(runEventuallyWithNetwork(mutexPort));
-            });
+        // No socket must timeout, so that they aren't closed before we exit
+        server.timeout = 0;
+
+        // If we fail to setup the server, we ask the existing one for its name
+        server.on('error', () => {
+          reportServerName();
+        });
+
+        // If we succeed, keep track of all the connected sockets to close them later
+        server.on('connection', socket => {
+          clients.add(socket);
+          socket.on('close', () => {
+            clients.delete(socket);
           });
-      });
+        });
 
-      const onServerEnd = async () => {
-        for (const client of clients) {
-          try {
-            client.destroy();
-          } catch (err) {
-            // pass
-          }
+        server.listen(connectionOptions, () => {
+          // Don't forget to kill the sockets if we're being killed via signals
+          onDeath(killSockets);
+
+          // Also kill the sockets if we finish, whether it's a success or a failure
+          run().then(
+            res => {
+              killSockets();
+              resolve(res);
+            },
+            err => {
+              killSockets();
+              reject(err);
+            },
+          );
+        });
+
+        function manager(request, response) {
+          response.writeHead(200);
+          response.end(JSON.stringify({cwd: config.cwd, pid: process.pid}));
         }
 
-        await server.close();
-        server.unref();
-      };
+        function killSockets() {
+          try {
+            server.close();
+          } catch (err) {
+            // best effort
+          }
 
-      // open the server and continue only if succeed.
-      server.listen(connectionOptions, () => {
-        // ensure the server gets closed properly on SIGNALS.
-        onDeath(onServerEnd);
+          for (const socket of clients) {
+            try {
+              socket.destroy();
+            } catch (err) {
+              // best effort
+            }
+          }
 
-        resolve(run().then(onServerEnd));
-      });
+          // If the process hasn't exited in the next 5s, it has stalled and we abort
+          const timeout = setTimeout(() => {
+            console.error('Process stalled');
+            if (process._getActiveHandles) {
+              console.error('Active handles:');
+              // $FlowFixMe: getActiveHandles is undocumented, but it exists
+              for (const handle of process._getActiveHandles()) {
+                console.error(`  - ${handle.constructor.name}`);
+              }
+            }
+            // eslint-disable-next-line no-process-exit
+            process.exit(1);
+          }, 5000);
 
-      server.on('connection', function(socket) {
-        clients.add(socket);
+          // This timeout must not prevent us from exiting
+          // $FlowFixMe: Node's setTimeout returns a Timeout, not a Number
+          timeout.unref();
+        }
+      }
 
-        socket.on('close', () => clients.delete(socket));
-      });
+      function reportServerName() {
+        const request = http.get(connectionOptions, response => {
+          const buffers = [];
+
+          response.on('data', buffer => {
+            buffers.push(buffer);
+          });
+
+          response.on('end', () => {
+            const {cwd, pid} = JSON.parse(Buffer.concat(buffers).toString());
+            reporter.warn(reporter.lang('waitingNamedInstance', pid, cwd));
+            waitForTheNetwork();
+          });
+
+          response.on('error', () => {
+            startServer();
+          });
+        });
+
+        request.on('error', () => {
+          startServer();
+        });
+      }
+
+      function waitForTheNetwork() {
+        const socket = net.createConnection(connectionOptions);
+
+        socket.on('error', () => {
+          // catch & ignore, the retry is handled in 'close'
+        });
+
+        socket.on('close', () => {
+          startServer();
+        });
+      }
+
+      startServer();
     });
   };
 
@@ -319,7 +428,10 @@ export function main({
     }
 
     // lockfile
-    const lockLoc = path.join(config.cwd, constants.LOCKFILE_FILENAME);
+    const lockLoc = path.join(
+      config.lockfileFolder || config.cwd, // lockfileFolder might not be set at this point
+      constants.LOCKFILE_FILENAME,
+    );
     const lockfile = fs.existsSync(lockLoc) ? fs.readFileSync(lockLoc, 'utf8') : 'No lockfile';
     log.push(`Lockfile: ${indent(lockfile)}`);
 
@@ -349,16 +461,12 @@ export function main({
     return errorReportLoc;
   }
 
-  const exit = exitCode => {
-    process.exitCode = exitCode || 0;
-    return reporter.close();
-  };
-
-  const cwd = findProjectRoot(commander.cwd);
+  const cwd = command.shouldRunInCurrentCwd ? commander.cwd : findProjectRoot(commander.cwd);
 
   config
     .init({
       cwd,
+      commandName,
 
       binLinks: commander.binLinks,
       modulesFolder: commander.modulesFolder,
@@ -376,14 +484,19 @@ export function main({
       production: commander.production,
       httpProxy: commander.proxy,
       httpsProxy: commander.httpsProxy,
+      registry: commander.registry,
       networkConcurrency: commander.networkConcurrency,
       networkTimeout: commander.networkTimeout,
       nonInteractive: commander.nonInteractive,
       scriptsPrependNodePath: commander.scriptsPrependNodePath,
-
-      commandName: commandName === 'run' ? commander.args[0] : commandName,
+      updateChecksums: commander.updateChecksums,
     })
     .then(() => {
+      // lockfile check must happen after config.init sets lockfileFolder
+      if (command.requireLockfile && !fs.existsSync(path.join(config.lockfileFolder, constants.LOCKFILE_FILENAME))) {
+        throw new MessageError(reporter.lang('noRequiredLockfile'));
+      }
+
       // option "no-progress" stored in yarn config
       const noProgressConfig = config.registries.yarn.getOption('no-progress');
 
@@ -427,8 +540,8 @@ export function main({
         onUnexpectedError(err);
       }
 
-      if (commands[commandName]) {
-        reporter.info(commands[commandName].getDocsInfo);
+      if (command.getDocsInfo) {
+        reporter.info(command.getDocsInfo);
       }
 
       return exit(1);
@@ -439,19 +552,22 @@ async function start(): Promise<void> {
   const rc = getRcConfigForCwd(process.cwd());
   const yarnPath = rc['yarn-path'];
 
-  if (yarnPath && process.env.YARN_IGNORE_PATH !== '1') {
+  if (yarnPath && !boolifyWithDefault(process.env.YARN_IGNORE_PATH, false)) {
     const argv = process.argv.slice(2);
     const opts = {stdio: 'inherit', env: Object.assign({}, process.env, {YARN_IGNORE_PATH: 1})};
+    let exitCode = 0;
 
     try {
-      await spawnp(yarnPath, argv, opts);
+      exitCode = await spawnp(yarnPath, argv, opts);
     } catch (firstError) {
       try {
-        await forkp(yarnPath, argv, opts);
+        exitCode = await forkp(yarnPath, argv, opts);
       } catch (error) {
         throw firstError;
       }
     }
+
+    process.exitCode = exitCode;
   } else {
     // ignore all arguments after a --
     const doubleDashIndex = process.argv.findIndex(element => element === '--');

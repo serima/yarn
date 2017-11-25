@@ -5,7 +5,7 @@ import type {Reporter} from './reporters/index.js';
 import type {Manifest, PackageRemote, WorkspacesManifestMap} from './types.js';
 import type PackageReference from './package-reference.js';
 import {execFromManifest} from './util/execute-lifecycle-script.js';
-import {expandPath} from './util/path.js';
+import {resolveWithHome} from './util/path.js';
 import normalizeManifest from './util/normalize-manifest/index.js';
 import {MessageError} from './errors.js';
 import * as fs from './util/fs.js';
@@ -56,6 +56,9 @@ export type ConfigOptions = {
   httpsProxy?: ?string,
 
   commandName?: ?string,
+  registry?: ?string,
+
+  updateChecksums?: boolean,
 };
 
 type PackageMetadata = {
@@ -101,6 +104,7 @@ export default class Config {
   linkFileDependencies: boolean;
   ignorePlatform: boolean;
   binLinks: boolean;
+  updateChecksums: boolean;
 
   //
   linkedModules: Array<string>;
@@ -191,11 +195,11 @@ export default class Config {
    * Get a config option from our yarn config.
    */
 
-  getOption(key: string, expand: boolean = false): mixed {
+  getOption(key: string, resolve: boolean = false): mixed {
     const value = this.registries.yarn.getOption(key);
 
-    if (expand && typeof value === 'string') {
-      return expandPath(value);
+    if (resolve && typeof value === 'string' && value.length) {
+      return resolveWithHome(value);
     }
 
     return value;
@@ -249,7 +253,9 @@ export default class Config {
 
       // instantiate registry
       const registry = new Registry(this.cwd, this.registries, this.requestManager, this.reporter);
-      await registry.init();
+      await registry.init({
+        registry: opts.registry,
+      });
 
       this.registries[key] = registry;
       this.registryFolders.push(registry.folder);
@@ -270,10 +276,12 @@ export default class Config {
 
     this.networkTimeout = opts.networkTimeout || Number(this.getOption('network-timeout')) || constants.NETWORK_TIMEOUT;
 
+    const httpProxy = opts.httpProxy || this.getOption('proxy');
+    const httpsProxy = opts.httpsProxy || this.getOption('https-proxy');
     this.requestManager.setOptions({
       userAgent: String(this.getOption('user-agent')),
-      httpProxy: String(opts.httpProxy || this.getOption('proxy') || ''),
-      httpsProxy: String(opts.httpsProxy || this.getOption('https-proxy') || ''),
+      httpProxy: httpProxy === false ? false : String(httpProxy || ''),
+      httpsProxy: httpsProxy === false ? false : String(httpsProxy || ''),
       strictSSL: Boolean(this.getOption('strict-ssl')),
       ca: Array.prototype.concat(opts.ca || this.getOption('ca') || []).map(String),
       cafile: String(opts.cafile || this.getOption('cafile', true) || ''),
@@ -290,29 +298,20 @@ export default class Config {
       const preferredCacheFolder = opts.preferredCacheFolder || this.getOption('preferred-cache-folder', true);
 
       if (preferredCacheFolder) {
-        preferredCacheFolders = [preferredCacheFolder].concat(preferredCacheFolders);
+        preferredCacheFolders = [String(preferredCacheFolder)].concat(preferredCacheFolders);
       }
 
-      for (let t = 0; t < preferredCacheFolders.length && !cacheRootFolder; ++t) {
-        const tentativeCacheFolder = String(preferredCacheFolders[t]);
+      const cacheFolderQuery = await fs.getFirstSuitableFolder(
+        preferredCacheFolders,
+        fs.constants.W_OK | fs.constants.X_OK | fs.constants.R_OK, // eslint-disable-line no-bitwise
+      );
+      for (const skippedEntry of cacheFolderQuery.skipped) {
+        this.reporter.warn(this.reporter.lang('cacheFolderSkipped', skippedEntry.folder));
+      }
 
-        try {
-          await fs.mkdirp(tentativeCacheFolder);
-
-          const testFile = path.join(tentativeCacheFolder, 'testfile');
-
-          // fs.access is not enough, because the cache folder could actually be a file.
-          await fs.writeFile(testFile, 'content');
-          await fs.readFile(testFile);
-
-          cacheRootFolder = tentativeCacheFolder;
-        } catch (error) {
-          this.reporter.warn(this.reporter.lang('cacheFolderSkipped', tentativeCacheFolder));
-        }
-
-        if (cacheRootFolder && t > 0) {
-          this.reporter.warn(this.reporter.lang('cacheFolderSelected', cacheRootFolder));
-        }
+      cacheRootFolder = cacheFolderQuery.folder;
+      if (cacheRootFolder && cacheFolderQuery.skipped.length > 0) {
+        this.reporter.warn(this.reporter.lang('cacheFolderSelected', cacheRootFolder));
       }
     }
 
@@ -334,17 +333,14 @@ export default class Config {
     await fs.mkdirp(this.cacheFolder);
     await fs.mkdirp(this.tempFolder);
 
-    if (opts.production === 'false') {
-      this.production = false;
-    } else if (
-      this.getOption('production') ||
-      (process.env.NODE_ENV === 'production' &&
-        process.env.NPM_CONFIG_PRODUCTION !== 'false' &&
-        process.env.YARN_PRODUCTION !== 'false')
-    ) {
-      this.production = true;
+    if (opts.production !== undefined) {
+      this.production = Boolean(opts.production);
     } else {
-      this.production = !!opts.production;
+      this.production =
+        Boolean(this.getOption('production')) ||
+        (process.env.NODE_ENV === 'production' &&
+          process.env.NPM_CONFIG_PRODUCTION !== 'false' &&
+          process.env.YARN_PRODUCTION !== 'false');
     }
 
     if (this.workspaceRootFolder && !this.workspacesEnabled) {
@@ -371,6 +367,7 @@ export default class Config {
     this.linkFolder = opts.linkFolder || constants.LINK_REGISTRY_DIRECTORY;
     this.offline = !!opts.offline;
     this.binLinks = !!opts.binLinks;
+    this.updateChecksums = !!opts.updateChecksums;
 
     this.ignorePlatform = !!opts.ignorePlatform;
     this.ignoreScripts = !!opts.ignoreScripts;

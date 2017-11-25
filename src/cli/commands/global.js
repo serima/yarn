@@ -18,6 +18,12 @@ import {POSIX_GLOBAL_PREFIX, FALLBACK_GLOBAL_PREFIX} from '../../constants.js';
 import * as fs from '../../util/fs.js';
 
 class GlobalAdd extends Add {
+  constructor(args: Array<string>, flags: Object, config: Config, reporter: Reporter, lockfile: Lockfile) {
+    super(args, flags, config, reporter, lockfile);
+
+    this.linker.setTopLevelBinLinking(false);
+  }
+
   maybeOutputSaveTree(): Promise<void> {
     for (const pattern of this.addedPatterns) {
       const manifest = this.resolver.getStrictResolvedPattern(pattern);
@@ -34,7 +40,7 @@ class GlobalAdd extends Add {
 const path = require('path');
 
 export function hasWrapper(flags: Object, args: Array<string>): boolean {
-  return args[0] !== 'bin';
+  return args[0] !== 'bin' && args[0] !== 'dir';
 }
 
 async function updateCwd(config: Config): Promise<void> {
@@ -81,29 +87,31 @@ async function getGlobalPrefix(config: Config, flags: Object): Promise<string> {
     return process.env.PREFIX;
   }
 
-  let prefix = FALLBACK_GLOBAL_PREFIX;
+  const potentialPrefixFolders = [FALLBACK_GLOBAL_PREFIX];
   if (process.platform === 'win32') {
     // %LOCALAPPDATA%\Yarn --> C:\Users\Alice\AppData\Local\Yarn
     if (process.env.LOCALAPPDATA) {
-      prefix = path.join(process.env.LOCALAPPDATA, 'Yarn');
+      potentialPrefixFolders.unshift(path.join(process.env.LOCALAPPDATA, 'Yarn'));
     }
   } else {
-    prefix = POSIX_GLOBAL_PREFIX;
+    potentialPrefixFolders.unshift(POSIX_GLOBAL_PREFIX);
   }
 
-  const binFolder = path.join(prefix, 'bin');
-  try {
-    // eslint-disable-next-line no-bitwise
-    await fs.access(binFolder, fs.constants.W_OK | fs.constants.X_OK);
-  } catch (err) {
-    if (err.code === 'EACCES') {
-      prefix = FALLBACK_GLOBAL_PREFIX;
-    } else if (err.code === 'ENOENT') {
-      // ignore - that just means we don't have the folder, yet
-    } else {
-      throw err;
-    }
+  const binFolders = potentialPrefixFolders.map(prefix => path.join(prefix, 'bin'));
+  const prefixFolderQueryResult = await fs.getFirstSuitableFolder(binFolders);
+  const prefix = prefixFolderQueryResult.folder && path.dirname(prefixFolderQueryResult.folder);
+
+  if (!prefix) {
+    config.reporter.warn(
+      config.reporter.lang(
+        'noGlobalFolder',
+        prefixFolderQueryResult.skipped.map(item => path.dirname(item.folder)).join(', '),
+      ),
+    );
+
+    return FALLBACK_GLOBAL_PREFIX;
   }
+
   return prefix;
 }
 
@@ -220,7 +228,12 @@ const {run, setFlags: _setFlags} = buildSubCommands('global', {
   },
 
   async bin(config: Config, reporter: Reporter, flags: Object, args: Array<string>): Promise<void> {
-    reporter.log(await getBinFolder(config, flags));
+    reporter.log(await getBinFolder(config, flags), {force: true});
+  },
+
+  dir(config: Config, reporter: Reporter, flags: Object, args: Array<string>): Promise<void> {
+    reporter.log(config.globalFolder, {force: true});
+    return Promise.resolve();
   },
 
   async ls(config: Config, reporter: Reporter, flags: Object, args: Array<string>): Promise<void> {
@@ -274,4 +287,5 @@ export {run};
 export function setFlags(commander: Object) {
   _setFlags(commander);
   commander.option('--prefix <prefix>', 'bin prefix to use to install binaries');
+  commander.option('--latest', 'upgrade to the latest version of packages');
 }

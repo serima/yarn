@@ -1,21 +1,25 @@
 /* @flow */
 
+import invariant from 'invariant';
+import {StringDecoder} from 'string_decoder';
+import tarFs from 'tar-fs';
+import tarStream from 'tar-stream';
+import url from 'url';
+import {createWriteStream} from 'fs';
+
 import type Config from '../config.js';
 import type {Reporter} from '../reporters/index.js';
 import type {ResolvedSha, GitRefResolvingInterface, GitRefs} from './git/git-ref-resolver.js';
-import {MessageError, SecurityError} from '../errors.js';
+import {MessageError, SecurityError, ProcessSpawnError} from '../errors.js';
 import {spawn as spawnGit} from './git/git-spawn.js';
 import {resolveVersion, isCommitSha, parseRefs} from './git/git-ref-resolver.js';
 import * as crypto from './crypto.js';
 import * as fs from './fs.js';
 import map from './map.js';
 
-const invariant = require('invariant');
-const StringDecoder = require('string_decoder').StringDecoder;
-const tarFs = require('tar-fs');
-const tarStream = require('tar-stream');
-const url = require('url');
-import {createWriteStream} from 'fs';
+const GIT_PROTOCOL_PREFIX = 'git+';
+const SSH_PROTOCOL = 'ssh:';
+const SCP_PATH_PREFIX = '/:';
 
 type GitUrl = {
   protocol: string, // parsed from URL
@@ -25,6 +29,33 @@ type GitUrl = {
 
 const supportsArchiveCache: {[key: string]: boolean} = map({
   'github.com': false, // not support, doubt they will ever support it
+});
+
+const handleSpawnError = err => {
+  if (err instanceof ProcessSpawnError) {
+    throw err;
+  }
+};
+
+const SHORTHAND_SERVICES: {[key: string]: url.parse} = map({
+  'github:': parsedUrl => ({
+    ...parsedUrl,
+    slashes: true,
+    auth: 'git',
+    protocol: SSH_PROTOCOL,
+    host: 'github.com',
+    hostname: 'github.com',
+    pathname: `/${parsedUrl.hostname}${parsedUrl.pathname}`,
+  }),
+  'bitbucket:': parsedUrl => ({
+    ...parsedUrl,
+    slashes: true,
+    auth: 'git',
+    protocol: SSH_PROTOCOL,
+    host: 'bitbucket.com',
+    hostname: 'bitbucket.com',
+    pathname: `/${parsedUrl.hostname}${parsedUrl.pathname}`,
+  }),
 });
 
 export default class Git implements GitRefResolvingInterface {
@@ -54,27 +85,39 @@ export default class Git implements GitRefResolvingInterface {
    */
   static npmUrlToGitUrl(npmUrl: string): GitUrl {
     // Expand shortened format first if needed
-    npmUrl = npmUrl.replace(/^github:/, 'git+ssh://git@github.com/');
+    let parsed = url.parse(npmUrl);
+    const expander = parsed.protocol && SHORTHAND_SERVICES[parsed.protocol];
+    if (expander) {
+      parsed = expander(parsed);
+    }
+
+    if (parsed.protocol && parsed.protocol.startsWith(GIT_PROTOCOL_PREFIX)) {
+      parsed.protocol = parsed.protocol.slice(GIT_PROTOCOL_PREFIX.length);
+    }
 
     // Special case in npm, where ssh:// prefix is stripped to pass scp-like syntax
     // which in git works as remote path only if there are no slashes before ':'.
-    const match = npmUrl.match(/^git\+ssh:\/\/((?:[^@:\/]+@)?([^@:\/]+):([^/]*).*)/);
-    // Additionally, if the host part is digits-only, npm falls back to
-    // interpreting it as an SSH URL with a port number.
-    if (match && /[^0-9]/.test(match[3])) {
+    // See #3146.
+    if (
+      parsed.protocol === SSH_PROTOCOL &&
+      parsed.hostname &&
+      parsed.path &&
+      parsed.path.startsWith(SCP_PATH_PREFIX) &&
+      parsed.port === null
+    ) {
+      const auth = parsed.auth ? parsed.auth + '@' : '';
+      const pathname = parsed.path.slice(SCP_PATH_PREFIX.length);
       return {
-        hostname: match[2],
-        protocol: 'ssh:',
-        repository: match[1],
+        hostname: parsed.hostname,
+        protocol: parsed.protocol,
+        repository: `${auth}${parsed.hostname}:${pathname}`,
       };
     }
 
-    const repository = npmUrl.replace(/^git\+/, '');
-    const parsed = url.parse(repository);
     return {
       hostname: parsed.hostname || null,
       protocol: parsed.protocol || 'file:',
-      repository,
+      repository: url.format({...parsed, hash: ''}),
     };
   }
 
@@ -96,6 +139,7 @@ export default class Git implements GitRefResolvingInterface {
       await spawnGit(['archive', `--remote=${ref.repository}`, 'HEAD', Date.now() + '']);
       throw new Error();
     } catch (err) {
+      handleSpawnError(err);
       const supports = err.message.indexOf('did not match any files') >= 0;
       return (supportsArchiveCache[hostname] = supports);
     }
@@ -110,6 +154,7 @@ export default class Git implements GitRefResolvingInterface {
       await spawnGit(['ls-remote', '-t', ref.repository]);
       return true;
     } catch (err) {
+      handleSpawnError(err);
       return false;
     }
   }
@@ -330,6 +375,7 @@ export default class Git implements GitRefResolvingInterface {
         cwd: this.cwd,
       });
     } catch (err) {
+      handleSpawnError(err);
       // file doesn't exist
       return false;
     }
@@ -377,6 +423,7 @@ export default class Git implements GitRefResolvingInterface {
       const [sha] = lines[1].split(/\s+/);
       return {sha, ref};
     } catch (err) {
+      handleSpawnError(err);
       // older versions of git don't support "--symref"
       const stdout = await spawnGit(['ls-remote', this.gitUrl.repository, 'HEAD']);
       const [sha] = stdout.split(/\s+/);
@@ -397,6 +444,7 @@ export default class Git implements GitRefResolvingInterface {
       const [sha] = stdout.split(/\s+/);
       return {sha, ref: undefined};
     } catch (err) {
+      handleSpawnError(err);
       // assuming commit not found, let's try something else
       return null;
     }

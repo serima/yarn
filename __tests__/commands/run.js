@@ -26,6 +26,17 @@ const fixturesLoc = path.join(__dirname, '..', 'fixtures', 'run');
 const runRun = buildRun.bind(null, BufferReporter, fixturesLoc, (args, flags, config, reporter): Promise<void> => {
   return run(config, reporter, flags, args);
 });
+const runRunInWorkspacePackage = function(cwd, ...args): Promise<void> {
+  return buildRun.bind(null, BufferReporter, fixturesLoc, (args, flags, config, reporter): Promise<void> => {
+    const originalCwd = config.cwd;
+    config.cwd = path.join(originalCwd, cwd);
+    const retVal = run(config, reporter, flags, args);
+    retVal.then(() => {
+      config.cwd = originalCwd;
+    });
+    return retVal;
+  })(...args);
+};
 
 test('lists all available commands with no arguments', (): Promise<void> => {
   return runRun([], {}, 'no-args', (config, reporter): ?Promise<void> => {
@@ -64,7 +75,7 @@ test('properly handles extra arguments and pre/post scripts', (): Promise<void> 
     const pkg = await fs.readJson(path.join(config.cwd, 'package.json'));
     const poststart = ['poststart', config, pkg.scripts.poststart, config.cwd];
     const prestart = ['prestart', config, pkg.scripts.prestart, config.cwd];
-    const start = ['start', config, pkg.scripts.start + ' "--hello"', config.cwd];
+    const start = ['start', config, pkg.scripts.start + ' --hello', config.cwd];
 
     expect(execCommand.mock.calls[0]).toEqual(prestart);
     expect(execCommand.mock.calls[1]).toEqual(start);
@@ -75,7 +86,7 @@ test('properly handles extra arguments and pre/post scripts', (): Promise<void> 
 test('properly handle bin scripts', (): Promise<void> => {
   return runRun(['cat-names'], {}, 'bin', config => {
     const script = path.join(config.cwd, 'node_modules', '.bin', 'cat-names');
-    const args = ['cat-names', config, `"${script}"`, config.cwd];
+    const args = ['cat-names', config, script, config.cwd];
 
     expect(execCommand).toBeCalledWith(...args);
   });
@@ -114,20 +125,45 @@ test('properly handle env command', (): Promise<void> => {
   });
 });
 
-test('retains string delimiters if args have spaces', (): Promise<void> => {
+test('adds string delimiters if args have spaces', (): Promise<void> => {
   return runRun(['cat-names', '--filter', 'cat names'], {}, 'bin', config => {
     const script = path.join(config.cwd, 'node_modules', '.bin', 'cat-names');
-    const args = ['cat-names', config, `"${script}" "--filter" "cat names"`, config.cwd];
+    const q = process.platform === 'win32' ? '"' : "'";
+    const args = ['cat-names', config, `${script} --filter ${q}cat names${q}`, config.cwd];
 
     expect(execCommand).toBeCalledWith(...args);
   });
 });
 
-test('retains quotes if args have spaces and quotes', (): Promise<void> => {
+test('adds quotes if args have spaces and quotes', (): Promise<void> => {
   return runRun(['cat-names', '--filter', '"cat names"'], {}, 'bin', config => {
     const script = path.join(config.cwd, 'node_modules', '.bin', 'cat-names');
-    const args = ['cat-names', config, `"${script}" "--filter" "\\"cat names\\""`, config.cwd];
+    const quotedCatNames = process.platform === 'win32' ? '^"\\^"cat^ names\\^"^"' : `'"cat names"'`;
+    const args = ['cat-names', config, `${script} --filter ${quotedCatNames}`, config.cwd];
 
     expect(execCommand).toBeCalledWith(...args);
+  });
+});
+
+test('returns noScriptsAvailable with no scripts', (): Promise<void> => {
+  return runRun([], {}, 'no-scripts', (config, reporter) => {
+    expect(reporter.getBuffer()).toMatchSnapshot();
+  });
+});
+
+test('returns noBinAvailable with no bins', (): Promise<void> => {
+  return runRun([], {}, 'no-bin', (config, reporter) => {
+    expect(reporter.getBuffer()).toMatchSnapshot();
+  });
+});
+
+test('adds workspace root node_modules/.bin to path when in a workspace', (): Promise<void> => {
+  return runRunInWorkspacePackage('packages/pkg1', ['env'], {}, 'workspace', (config, reporter): ?Promise<void> => {
+    const logEntry = reporter.getBuffer().find(entry => entry.type === 'log');
+    const parsedLogData = JSON.parse(logEntry ? logEntry.data.toString() : '{}');
+    const envPaths = (parsedLogData.PATH || parsedLogData.Path).split(path.delimiter);
+
+    expect(envPaths).toContain(path.join(config.cwd, 'node_modules', '.bin'));
+    expect(envPaths).toContain(path.join(config.cwd, 'packages', 'pkg1', 'node_modules', '.bin'));
   });
 });

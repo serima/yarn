@@ -11,7 +11,7 @@ import {parse} from '../../../src/lockfile';
 import {Install, run as install} from '../../../src/cli/commands/install.js';
 import Lockfile from '../../../src/lockfile';
 import * as fs from '../../../src/util/fs.js';
-import {getPackageVersion, explodeLockfile, runInstall, createLockfile, run as buildRun} from '../_helpers.js';
+import {getPackageVersion, explodeLockfile, runInstall, runLink, createLockfile, run as buildRun} from '../_helpers.js';
 
 jasmine.DEFAULT_TIMEOUT_INTERVAL = 150000;
 
@@ -55,6 +55,16 @@ test.concurrent('install should not hoist packages above their peer dependencies
   });
 });
 
+test.concurrent('install should resolve peer dependencies from same subtrees', async () => {
+  await runInstall({}, 'peer-dep-same-subtree', async (config): Promise<void> => {
+    expect(JSON.parse(await fs.readFile(`${config.cwd}/node_modules/d/node_modules/a/package.json`)).version).toEqual(
+      '1.0.0',
+    );
+    expect(JSON.parse(await fs.readFile(`${config.cwd}/node_modules//a/package.json`)).version).toEqual('1.1.0');
+    expect(await fs.exists(`${config.cwd}/node_modules/c/node_modules/a`)).toEqual(false);
+  });
+});
+
 test.concurrent('install optional subdependencies by default', async () => {
   await runInstall({}, 'install-optional-dependencies', async (config): Promise<void> => {
     expect(await fs.exists(`${config.cwd}/node_modules/dep-b`)).toEqual(true);
@@ -64,6 +74,9 @@ test.concurrent('install optional subdependencies by default', async () => {
 test.concurrent('installing with --ignore-optional should not install optional subdependencies', async () => {
   await runInstall({ignoreOptional: true}, 'install-optional-dependencies', async (config): Promise<void> => {
     expect(await fs.exists(`${config.cwd}/node_modules/dep-b`)).toEqual(false);
+    expect(await fs.exists(`${config.cwd}/node_modules/dep-c`)).toEqual(true);
+    expect(await fs.exists(`${config.cwd}/node_modules/dep-d`)).toEqual(true);
+    expect(await fs.exists(`${config.cwd}/node_modules/dep-e`)).toEqual(true);
   });
 });
 
@@ -483,11 +496,18 @@ test.concurrent("don't install with file: protocol as default if target is a fil
   return expect(runInstall({lockfile: false}, 'install-file-as-default-no-file')).rejects.toBeDefined();
 });
 
-test.concurrent("don't install with file: protocol as default if target does not have package.json", (): Promise<
+test.concurrent("don't install with implicit file: protocol if target does not have package.json", (): Promise<
   void,
 > => {
   // $FlowFixMe
   return expect(runInstall({lockfile: false}, 'install-file-as-default-no-package')).rejects.toBeDefined();
+});
+
+test.concurrent('install with explicit file: protocol if target does not have package.json', (): Promise<void> => {
+  return runInstall({}, 'install-file-no-package', async config => {
+    expect(await fs.exists(path.join(config.cwd, 'node_modules', 'foo', 'bar.js'))).toEqual(true);
+    expect(await fs.exists(path.join(config.cwd, 'node_modules', 'bar', 'bar.js'))).toEqual(true);
+  });
 });
 
 test.concurrent("don't install with file: protocol as default if target is valid semver", (): Promise<void> => {
@@ -620,6 +640,36 @@ test.concurrent('install with comments in manifest', (): Promise<void> => {
   });
 });
 
+test.concurrent('install with comments in manifest resolutions does not result in warning', (): Promise<void> => {
+  const fixturesLoc = path.join(__dirname, '..', '..', 'fixtures', 'install');
+
+  return buildRun(
+    reporters.BufferReporter,
+    fixturesLoc,
+    async (args, flags, config, reporter): Promise<void> => {
+      await install(config, reporter, flags, args);
+
+      const output = reporter.getBuffer();
+      const warnings = output.filter(entry => entry.type === 'warning');
+
+      expect(
+        warnings.some(warning => {
+          return warning.data.toString().indexOf(reporter.lang('invalidResolutionName', '//')) > -1;
+        }),
+      ).toEqual(false);
+    },
+    [],
+    {lockfile: false},
+    'install-with-comments',
+  );
+});
+
+test.concurrent('install with null versions in manifest', (): Promise<void> => {
+  return runInstall({}, 'install-with-null-version', async config => {
+    expect(await fs.exists(path.join(config.cwd, 'node_modules', 'left-pad'))).toEqual(true);
+  });
+});
+
 test.concurrent('run install scripts in the order when one dependency does not have install script', (): Promise<
   void,
 > => {
@@ -679,6 +729,21 @@ test.concurrent('install should add missing deps to yarn and mirror (PR import s
     expect(lockFileLines).toHaveLength(11);
     expect(lockFileLines[3].indexOf('mime-db@')).toEqual(0);
     expect(lockFileLines[6].indexOf('mime-types@2.0.0')).toEqual(0);
+  });
+});
+
+test.concurrent('install should update checksums in yarn.lock (--update-checksums)', (): Promise<void> => {
+  const packageRealHash = '5faad9c2c07f60dd76770f71cf025b62a63cfd4e';
+  const packageCacheName = `npm-abab-1.0.4-${packageRealHash}`;
+  return runInstall({updateChecksums: true}, 'install-update-checksums', async config => {
+    const lockFileContent = await fs.readFile(path.join(config.cwd, 'yarn.lock'));
+    const lockFileLines = explodeLockfile(lockFileContent);
+    const packageHashInLockfile = lockFileLines[2].replace(/(^.*#)|("$)/g, '');
+    const installedPackageJson = path.resolve(config.cwd, 'node_modules', 'abab', 'package.json');
+    const cachePackageJson = path.resolve(config.cwd, '.yarn-cache/v1/', packageCacheName, 'package.json');
+    expect(packageHashInLockfile).toEqual(packageRealHash);
+    expect(await fs.exists(installedPackageJson)).toBe(true);
+    expect(await fs.exists(cachePackageJson)).toBe(true);
   });
 });
 
@@ -814,29 +879,6 @@ test('install a scoped module from authed private registry with a missing traili
       (await fs.readFile(path.join(config.cwd, 'node_modules', '@types', 'lodash', 'index.d.ts'))).split('\n')[0],
     ).toEqual('// Type definitions for Lo-Dash 4.14');
   });
-});
-
-test.concurrent('install will not overwrite files in symlinked scoped directories', async (): Promise<void> => {
-  await runInstall(
-    {},
-    'install-dont-overwrite-linked-scoped',
-    async (config): Promise<void> => {
-      const dependencyPath = path.join(config.cwd, 'node_modules', '@fakescope', 'fake-dependency');
-      expect('Symlinked scoped package test').toEqual(
-        (await fs.readJson(path.join(dependencyPath, 'package.json'))).description,
-      );
-      expect(await fs.exists(path.join(dependencyPath, 'index.js'))).toEqual(false);
-    },
-    async cwd => {
-      const dirToLink = path.join(cwd, 'dir-to-link');
-
-      await fs.mkdirp(path.join(cwd, '.yarn-link', '@fakescope'));
-      await fs.symlink(dirToLink, path.join(cwd, '.yarn-link', '@fakescope', 'fake-dependency'));
-
-      await fs.mkdirp(path.join(cwd, 'node_modules', '@fakescope'));
-      await fs.symlink(dirToLink, path.join(cwd, 'node_modules', '@fakescope', 'fake-dependency'));
-    },
-  );
 });
 
 test.concurrent('install of scoped package with subdependency conflict should pass check', (): Promise<void> => {
@@ -1033,12 +1075,17 @@ test.concurrent('transitive file: dependencies should work', (): Promise<void> =
   });
 });
 
-// Unskip once https://github.com/yarnpkg/yarn/issues/3778 is resolved
-test.skip('unbound transitive dependencies should not conflict with top level dependency', async () => {
+test('unbound transitive dependencies should not conflict with top level dependency', async () => {
   await runInstall({flat: true}, 'install-conflicts', async config => {
     expect((await fs.readJson(path.join(config.cwd, 'node_modules', 'left-pad', 'package.json'))).version).toEqual(
       '1.0.0',
     );
+  });
+});
+
+test('manifest optimization respects versions with alternation', async () => {
+  await runInstall({flat: true}, 'optimize-version-with-alternation', async config => {
+    expect(await getPackageVersion(config, 'lodash')).toEqual('2.4.2');
   });
 });
 
@@ -1078,4 +1125,55 @@ test.concurrent('warns for missing bundledDependencies', (): Promise<void> => {
     {},
     'missing-bundled-dep',
   );
+});
+
+test.concurrent('install will not overwrite linked scoped dependencies', async (): Promise<void> => {
+  // install only dependencies
+  await runInstall({production: true}, 'install-dont-overwrite-linked', async (installConfig): Promise<void> => {
+    // link our fake dep to the registry
+    await runLink([], {}, 'package-with-name-scoped', async (linkConfig): Promise<void> => {
+      // link our fake dependency in our node_modules
+      await runLink(
+        ['@fakescope/a-package'],
+        {linkFolder: linkConfig.linkFolder},
+        {cwd: installConfig.cwd},
+        async (): Promise<void> => {
+          // check that it exists (just in case)
+          const existed = await fs.exists(path.join(installConfig.cwd, 'node_modules', '@fakescope', 'a-package'));
+          expect(existed).toEqual(true);
+
+          // run install to install dev deps which would remove the linked dep if the bug was present
+          await runInstall({linkFolder: linkConfig.linkFolder}, {cwd: installConfig.cwd}, async (): Promise<void> => {
+            // if the linked dep is still there is a win :)
+            const existed = await fs.exists(path.join(installConfig.cwd, 'node_modules', '@fakescope', 'a-package'));
+            expect(existed).toEqual(true);
+          });
+        },
+      );
+    });
+  });
+});
+
+test.concurrent('install will not overwrite linked dependencies', async (): Promise<void> => {
+  // install only dependencies
+  await runInstall({production: true}, 'install-dont-overwrite-linked', async (installConfig): Promise<void> => {
+    // link our fake dep to the registry
+    await runLink([], {}, 'package-with-name', async (linkConfig): Promise<void> => {
+      // link our fake dependency in our node_modules
+      await runLink(['a-package'], {linkFolder: linkConfig.linkFolder}, {cwd: installConfig.cwd}, async (): Promise<
+        void,
+      > => {
+        // check that it exists (just in case)
+        const existed = await fs.exists(path.join(installConfig.cwd, 'node_modules', 'a-package'));
+        expect(existed).toEqual(true);
+
+        // run install to install dev deps which would remove the linked dep if the bug was present
+        await runInstall({linkFolder: linkConfig.linkFolder}, {cwd: installConfig.cwd}, async (): Promise<void> => {
+          // if the linked dep is still there is a win :)
+          const existed = await fs.exists(path.join(installConfig.cwd, 'node_modules', 'a-package'));
+          expect(existed).toEqual(true);
+        });
+      });
+    });
+  });
 });

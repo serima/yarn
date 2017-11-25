@@ -146,3 +146,33 @@ test.concurrent('pack should exclude all files in dot-directories if not in file
     expect(files.indexOf('a.js')).toEqual(-1);
   });
 });
+
+// Broken: https://github.com/yarnpkg/yarn/issues/2636
+test.skip('pack should include bundled dependencies', (): Promise<void> => {
+  return runPack([], {}, 'bundled-dependencies', async (config): Promise<void> => {
+    const {cwd} = config;
+    const files = await getFilesFromArchive(
+      path.join(cwd, 'bundled-dependencies-v1.0.0.tgz'),
+      path.join(cwd, 'bundled-dependencies-v1.0.0'),
+    );
+    const expected = [
+      'index.js',
+      'package.json',
+      path.join('node_modules', 'a', 'package.json'),
+      path.join('node_modules', 'b', 'package.json'),
+    ];
+    expect(files.sort()).toEqual(expected.sort());
+  });
+});
+
+test.concurrent('pack should match dotfiles with globs', (): Promise<void> => {
+  return runPack([], {}, 'glob-dotfile', async (config): Promise<void> => {
+    const {cwd} = config;
+    const files = await getFilesFromArchive(
+      path.join(cwd, 'glob-dotfile-v1.0.0.tgz'),
+      path.join(cwd, 'glob-dotfile-v1.0.0'),
+    );
+    const expected = ['index.js', 'package.json', 'dir', path.join('dir', '.dotfile')];
+    expect(files.sort()).toEqual(expected.sort());
+  });
+});

@@ -2,7 +2,7 @@
 
 import type {ReporterSpinner} from '../reporters/types.js';
 import type Config from '../config.js';
-import {MessageError, SpawnError} from '../errors.js';
+import {MessageError, ProcessTermError} from '../errors.js';
 import * as constants from '../constants.js';
 import * as child from './child.js';
 import {exists} from './fs.js';
@@ -61,13 +61,17 @@ export async function makeEnv(
   // parser used by npm. Since we use other parser, we just roughly emulate it's output. (See: #684)
   env.npm_config_argv = JSON.stringify({
     remain: [],
-    cooked: [config.commandName],
-    original: [config.commandName],
+    cooked: config.commandName === 'run' ? [config.commandName, stage] : [config.commandName],
+    original: process.argv.slice(2),
   });
 
-  // add npm_package_*
   const manifest = await config.maybeReadManifest(cwd);
   if (manifest) {
+    if (manifest.scripts && Object.prototype.hasOwnProperty.call(manifest.scripts, stage)) {
+      env.npm_lifecycle_script = manifest.scripts[stage];
+    }
+
+    // add npm_package_*
     const queue = [['', manifest]];
     while (queue.length) {
       const [key, val] = queue.pop();
@@ -144,6 +148,9 @@ export async function makeEnv(
   // add .bin folders to PATH
   for (const registry of Object.keys(registries)) {
     const binFolder = path.join(config.registries[registry].folder, '.bin');
+    if (config.workspacesEnabled && config.workspaceRootFolder) {
+      pathParts.unshift(path.join(config.workspaceRootFolder, binFolder));
+    }
     pathParts.unshift(path.join(config.linkFolder, binFolder));
     pathParts.unshift(path.join(cwd, binFolder));
   }
@@ -260,7 +267,7 @@ export async function execCommand(stage: string, config: Config, cmd: string, cw
     await executeLifecycleScript(stage, config, cwd, cmd);
     return Promise.resolve();
   } catch (err) {
-    if (err instanceof SpawnError) {
+    if (err instanceof ProcessTermError) {
       throw new MessageError(
         err.EXIT_SIGNAL
           ? reporter.lang('commandFailedWithSignal', err.EXIT_SIGNAL)

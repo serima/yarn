@@ -59,7 +59,9 @@ export class Add extends Install {
    * returns version for a pattern based on Manifest
    */
   getPatternVersion(pattern: string, pkg: Manifest): string {
-    const {exact, tilde} = this.flags;
+    const tilde = this.flags.tilde;
+    const configPrefix = String(this.config.getOption('save-prefix'));
+    const exact = this.flags.exact || Boolean(this.config.getOption('save-exact')) || configPrefix === '';
     const {hasVersion, range} = normalizePattern(pattern);
     let version;
 
@@ -76,7 +78,7 @@ export class Add extends Install {
       } else if (exact) {
         prefix = '';
       } else {
-        prefix = String(this.config.getOption('save-prefix')) || '^';
+        prefix = configPrefix || '^';
       }
 
       version = `${prefix}${pkg.version}`;
@@ -120,10 +122,11 @@ export class Add extends Install {
    */
 
   async init(): Promise<Array<string>> {
-    if (this.config.workspaceRootFolder && this.config.cwd === this.config.workspaceRootFolder) {
-      if (this.flagToOrigin === 'dependencies') {
-        throw new MessageError(this.reporter.lang('workspacesPreferDevDependencies'));
-      }
+    const isWorkspaceRoot = this.config.workspaceRootFolder && this.config.cwd === this.config.workspaceRootFolder;
+
+    // running "yarn add something" in a workspace root is often a mistake
+    if (isWorkspaceRoot && !this.flags.ignoreWorkspaceRootCheck) {
+      throw new MessageError(this.reporter.lang('workspacesAddRootCheck'));
     }
 
     this.addedPatterns = [];
@@ -192,6 +195,10 @@ export class Add extends Install {
 
       object[target] = object[target] || {};
       object[target][pkg.name] = version;
+
+      if (target !== this.flagToOrigin) {
+        this.reporter.warn(this.reporter.lang('moduleAlreadyInManifest', pkg.name, depType, this.flagToOrigin));
+      }
     }
 
     await this.config.saveRootManifests(manifests);
@@ -204,6 +211,7 @@ export function hasWrapper(commander: Object): boolean {
 
 export function setFlags(commander: Object) {
   commander.usage('add [packages ...] [flags]');
+  commander.option('-W, --ignore-workspace-root-check', 'required to run yarn add inside a workspace root');
   commander.option('-D, --dev', 'save package to your `devDependencies`');
   commander.option('-P, --peer', 'save package to your `peerDependencies`');
   commander.option('-O, --optional', 'save package to your `optionalDependencies`');

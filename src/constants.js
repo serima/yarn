@@ -10,6 +10,10 @@ type Env = {
 };
 
 export const DEPENDENCY_TYPES = ['devDependencies', 'dependencies', 'optionalDependencies', 'peerDependencies'];
+export const RESOLUTIONS = 'resolutions';
+export const MANIFEST_FIELDS = [RESOLUTIONS, ...DEPENDENCY_TYPES];
+
+export const SUPPORTED_NODE_VERSIONS = '^4.8.0 || ^5.7.0 || ^6.2.2 || >=8.0.0';
 
 export const YARN_REGISTRY = 'https://registry.yarnpkg.com';
 
@@ -57,7 +61,12 @@ function getPreferredCacheDirectories(): Array<string> {
     preferredCacheDirectories.push(getDirectory('cache'));
   }
 
-  preferredCacheDirectories.push(path.join(os.tmpdir(), '.yarn-cache'));
+  if (process.getuid) {
+    // $FlowFixMe: process.getuid exists, dammit
+    preferredCacheDirectories.push(path.join(os.tmpdir(), `.yarn-cache-${process.getuid()}`));
+  }
+
+  preferredCacheDirectories.push(path.join(os.tmpdir(), `.yarn-cache`));
 
   return preferredCacheDirectories;
 }
@@ -82,7 +91,7 @@ function getYarnBinPath(): string {
 export const NODE_MODULES_FOLDER = 'node_modules';
 export const NODE_PACKAGE_JSON = 'package.json';
 
-export const POSIX_GLOBAL_PREFIX = '/usr/local';
+export const POSIX_GLOBAL_PREFIX = `${process.env.DESTDIR || ''}/usr/local`;
 export const FALLBACK_GLOBAL_PREFIX = path.join(userHome, '.yarn');
 
 export const META_FOLDER = '.yarn-meta';
@@ -98,10 +107,6 @@ export const SINGLE_INSTANCE_PORT = 31997;
 export const SINGLE_INSTANCE_FILENAME = '.yarn-single-instance';
 
 export const ENV_PATH_KEY = getPathKey(process.platform, process.env);
-
-export function isProduction(env: Object = process.env): boolean {
-  return env.NODE_ENV === 'production';
-}
 
 export function getPathKey(platform: string, env: Env): string {
   let pathKey = 'PATH';

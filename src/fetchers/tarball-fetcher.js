@@ -67,8 +67,8 @@ export default class TarballFetcher extends BaseFetcher {
     const extractorStream = gunzip();
     const untarStream = tarFs.extract(this.dest, {
       strip: 1,
-      dmode: 0o555, // all dirs should be readable
-      fmode: 0o444, // all files should be readable
+      dmode: 0o755, // all dirs should be readable
+      fmode: 0o644, // all files should be readable
       chown: false, // don't chown. just leave as it is
     });
 
@@ -78,17 +78,35 @@ export default class TarballFetcher extends BaseFetcher {
         error.message = `${error.message}${tarballPath ? ` (${tarballPath})` : ''}`;
         reject(error);
       })
-      .on('finish', () => {
+      .on('finish', async () => {
         const expectHash = this.hash;
         const actualHash = validateStream.getHash();
+
         if (!expectHash || expectHash === actualHash) {
+          resolve({
+            hash: actualHash,
+          });
+        } else if (this.config.updateChecksums) {
+          // checksums differ and should be updated
+          // update hash, destination and cached package
+          const destUpdatedHash = this.dest.replace(this.hash || '', actualHash);
+          await fsUtil.unlink(destUpdatedHash);
+          await fsUtil.rename(this.dest, destUpdatedHash);
+          this.dest = this.dest.replace(this.hash || '', actualHash);
+          this.hash = actualHash;
           resolve({
             hash: actualHash,
           });
         } else {
           reject(
             new SecurityError(
-              this.config.reporter.lang('fetchBadHashWithPath', this.remote.reference, expectHash, actualHash),
+              this.config.reporter.lang(
+                'fetchBadHashWithPath',
+                this.packageName,
+                this.remote.reference,
+                actualHash,
+                expectHash,
+              ),
             ),
           );
         }
@@ -135,7 +153,6 @@ export default class TarballFetcher extends BaseFetcher {
           {
             headers: {
               'Accept-Encoding': 'gzip',
-              Accept: 'application/octet-stream',
             },
             buffer: true,
             process: (req, resolve, reject) => {
@@ -178,6 +195,17 @@ export default class TarballFetcher extends BaseFetcher {
           this.reporter.warn(this.reporter.lang('retryOnInternalServerError'));
           await sleep(3000);
         } else {
+          const tarballMirrorPath = this.getTarballMirrorPath();
+          const tarballCachePath = this.getTarballCachePath();
+
+          if (tarballMirrorPath && (await fsUtil.exists(tarballMirrorPath))) {
+            await fsUtil.unlink(tarballMirrorPath);
+          }
+
+          if (tarballCachePath && (await fsUtil.exists(tarballCachePath))) {
+            await fsUtil.unlink(tarballCachePath);
+          }
+
           throw err;
         }
       }

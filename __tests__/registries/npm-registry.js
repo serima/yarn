@@ -4,7 +4,7 @@ import {resolve, join as pathJoin} from 'path';
 
 import NpmRegistry from '../../src/registries/npm-registry.js';
 import {BufferReporter} from '../../src/reporters/index.js';
-import homeDir from '../../src/util/user-home-dir.js';
+import homeDir, {home} from '../../src/util/user-home-dir.js';
 
 describe('normalizeConfig', () => {
   beforeAll(() => {
@@ -39,6 +39,18 @@ describe('normalizeConfig', () => {
     const rooted = process.platform === 'win32' ? 'C:\\foo' : '/foo';
     const normalized = NpmRegistry.normalizeConfig({cafile: rooted})['cafile'];
     expect(normalized).toEqual(rooted);
+  });
+
+  test('handles missing HOME', () => {
+    const realHome = process.env.HOME;
+    delete process.env.HOME;
+
+    try {
+      const normalized = NpmRegistry.normalizeConfig({cafile: '${HOME}/foo'})['cafile'];
+      expect(normalized).toEqual(resolve(home, 'foo'));
+    } finally {
+      process.env.HOME = realHome;
+    }
   });
 });
 
@@ -245,13 +257,16 @@ describe('isRequestToRegistry functional test', () => {
     expect(npmRegistry.isRequestToRegistry('http://pkgs.host.com:80/foo/bar/baz', 'http://pkgs.host.com/bar/baz')).toBe(
       true,
     );
+    expect(npmRegistry.isRequestToRegistry('http://pkgs.host.com:80/foo/bar/baz', '//pkgs.host.com/bar/baz')).toBe(
+      true,
+    );
   });
 });
 
 const packageIdents = [
   ['normal', ''],
   ['@scopedNoPkg', ''],
-  ['@scoped/notescaped', ''],
+  ['@scoped/notescaped', '@scoped'],
   ['not@scope/pkg', ''],
   ['@scope?query=true', ''],
   ['@scope%2fpkg', '@scope'],
@@ -260,13 +275,15 @@ const packageIdents = [
   ['@scope%2fpkg%2f1.2.3', '@scope'],
   ['http://foo.bar:80/normal', ''],
   ['http://foo.bar:80/@scopedNoPkg', ''],
-  ['http://foo.bar:80/@scoped/notescaped', ''],
+  ['http://foo.bar:80/@scoped/notescaped', '@scoped'],
+  ['http://foo.bar:80/@scoped/notescaped/download/@scoped/notescaped-1.0.0.tgz', '@scoped'],
   ['http://foo.bar:80/not@scope/pkg', ''],
   ['http://foo.bar:80/@scope?query=true', ''],
   ['http://foo.bar:80/@scope%2fpkg', '@scope'],
   ['http://foo.bar:80/@scope%2fpkg%2fext', '@scope'],
   ['http://foo.bar:80/@scope%2fpkg?query=true', '@scope'],
   ['http://foo.bar:80/@scope%2fpkg%2f1.2.3', '@scope'],
+  ['http://foo.bar:80/@scope%2fpkg/download/@scope%2fpkg-1.0.0.tgz', '@scope'],
 ];
 
 describe('isScopedPackage functional test', () => {
@@ -278,6 +295,27 @@ describe('isScopedPackage functional test', () => {
     packageIdents.forEach(([pathname, scope]) => {
       expect(npmRegistry.isScopedPackage(pathname)).toEqual(!!scope.length);
     });
+  });
+});
+
+describe('getRequestUrl functional test', () => {
+  test('returns pathname when it is a full URL', () => {
+    const testCwd = '.';
+    const {mockRequestManager, mockRegistries, mockReporter} = createMocks();
+    const npmRegistry = new NpmRegistry(testCwd, mockRegistries, mockRequestManager, mockReporter);
+    const fullURL = 'HTTP://xn--xample-hva.com:80/foo/bar/baz';
+
+    expect(npmRegistry.getRequestUrl('https://my.registry.co', fullURL)).toEqual(fullURL);
+  });
+
+  test('correctly handles registries lacking a trailing slash', () => {
+    const testCwd = '.';
+    const {mockRequestManager, mockRegistries, mockReporter} = createMocks();
+    const npmRegistry = new NpmRegistry(testCwd, mockRegistries, mockRequestManager, mockReporter);
+    const registry = 'https://my.registry.co/registry';
+    const pathname = 'foo/bar/baz';
+
+    expect(npmRegistry.getRequestUrl(registry, pathname)).toEqual('https://my.registry.co/registry/foo/bar/baz');
   });
 });
 
@@ -309,5 +347,129 @@ describe('getPossibleConfigLocations', () => {
         expect.stringContaining(JSON.stringify(pathJoin(homeDir, '.npmrc'))),
       ]),
     );
+  });
+});
+
+describe('checkOutdated functional test', () => {
+  const mockConfig = {
+    resolveConstraints(): string {
+      return '2.0.0';
+    },
+  };
+
+  test('homepage URL from top level', async () => {
+    const testCwd = '.';
+    const {mockRequestManager, mockRegistries, mockReporter} = createMocks();
+    const npmRegistry = new NpmRegistry(testCwd, mockRegistries, mockRequestManager, mockReporter);
+
+    mockRequestManager.request = () => {
+      return {
+        homepage: 'http://package.homepage.com',
+        'dist-tags': {
+          latest: '2.0.0',
+        },
+        versions: {
+          '2.0.0': {
+            version: '2.0.0',
+          },
+        },
+      };
+    };
+
+    const result = await npmRegistry.checkOutdated(mockConfig, 'left-pad', '2.0.0');
+
+    expect(result).toMatchObject({
+      latest: '2.0.0',
+      wanted: '2.0.0',
+      url: 'http://package.homepage.com',
+    });
+  });
+
+  test('homepage URL fallback to wanted package manifest', async () => {
+    const testCwd = '.';
+    const {mockRequestManager, mockRegistries, mockReporter} = createMocks();
+    const npmRegistry = new NpmRegistry(testCwd, mockRegistries, mockRequestManager, mockReporter);
+
+    mockRequestManager.request = () => {
+      return {
+        'dist-tags': {
+          latest: '2.0.0',
+        },
+        versions: {
+          '2.0.0': {
+            version: '2.0.0',
+            homepage: 'http://package.homepage.com',
+          },
+        },
+      };
+    };
+
+    const result = await npmRegistry.checkOutdated(mockConfig, 'left-pad', '2.0.0');
+
+    expect(result).toMatchObject({
+      latest: '2.0.0',
+      wanted: '2.0.0',
+      url: 'http://package.homepage.com',
+    });
+  });
+
+  test('repository URL from top level', async () => {
+    const testCwd = '.';
+    const {mockRequestManager, mockRegistries, mockReporter} = createMocks();
+    const npmRegistry = new NpmRegistry(testCwd, mockRegistries, mockRequestManager, mockReporter);
+
+    mockRequestManager.request = () => {
+      return {
+        repository: {
+          url: 'http://package.repo.com',
+        },
+        'dist-tags': {
+          latest: '2.0.0',
+        },
+        versions: {
+          '2.0.0': {
+            version: '2.0.0',
+          },
+        },
+      };
+    };
+
+    const result = await npmRegistry.checkOutdated(mockConfig, 'left-pad', '2.0.0');
+
+    expect(result).toMatchObject({
+      latest: '2.0.0',
+      wanted: '2.0.0',
+      url: 'http://package.repo.com',
+    });
+  });
+
+  test('repository URL fallback to wanted package manifest', async () => {
+    const testCwd = '.';
+    const {mockRequestManager, mockRegistries, mockReporter} = createMocks();
+    const npmRegistry = new NpmRegistry(testCwd, mockRegistries, mockRequestManager, mockReporter);
+
+    mockRequestManager.request = () => {
+      return {
+        'dist-tags': {
+          latest: '2.0.0',
+        },
+        versions: {
+          '2.0.0': {
+            version: '2.0.0',
+            repository: {
+              url: 'http://package.repo.com',
+            },
+          },
+        },
+      };
+    };
+
+    const result = await npmRegistry.checkOutdated(mockConfig, 'left-pad', '2.0.0');
+
+    expect(result).toMatchObject({
+      latest: '2.0.0',
+      wanted: '2.0.0',
+      url: 'http://package.repo.com',
+    });
   });
 });

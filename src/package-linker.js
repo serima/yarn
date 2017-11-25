@@ -48,15 +48,21 @@ export default class PackageLinker {
     this.reporter = config.reporter;
     this.config = config;
     this.artifacts = {};
+    this.topLevelBinLinking = true;
   }
 
   artifacts: InstallArtifacts;
   reporter: Reporter;
   resolver: PackageResolver;
   config: Config;
+  topLevelBinLinking: boolean;
 
   setArtifacts(artifacts: InstallArtifacts) {
     this.artifacts = artifacts;
+  }
+
+  setTopLevelBinLinking(topLevelBinLinking: boolean) {
+    this.topLevelBinLinking = topLevelBinLinking;
   }
 
   async linkSelfDependencies(pkg: Manifest, pkgLoc: string, targetBinLoc: string): Promise<void> {
@@ -128,7 +134,9 @@ export default class PackageLinker {
 
     // write the executables
     for (const {dep, loc} of deps) {
-      await this.linkSelfDependencies(dep, loc, dir);
+      if (dep._reference && dep._reference.location) {
+        await this.linkSelfDependencies(dep, loc, dir);
+      }
     }
   }
 
@@ -236,30 +244,38 @@ export default class PackageLinker {
       }
     }
 
-    // keep track of all scoped paths to remove empty scopes after copy
-    const scopedPaths = new Set();
-
-    // register root & scoped packages as being possibly extraneous
     const possibleExtraneous: Set<string> = new Set();
-    for (const folder of this.config.registryFolders) {
-      const loc = path.join(this.config.cwd, folder);
+    const scopedPaths: Set<string> = new Set();
 
-      if (await fs.exists(loc)) {
-        const files = await fs.readdir(loc);
-        let filepath;
-        for (const file of files) {
-          filepath = path.join(loc, file);
-          if (file[0] === '@') {
+    const findExtraneousFiles = async basePath => {
+      for (const folder of this.config.registryFolders) {
+        const loc = path.join(basePath, folder);
+
+        if (await fs.exists(loc)) {
+          const files = await fs.readdir(loc);
+
+          for (const file of files) {
+            const filepath = path.join(loc, file);
+
             // it's a scope, not a package
-            scopedPaths.add(filepath);
-            const subfiles = await fs.readdir(filepath);
-            for (const subfile of subfiles) {
-              possibleExtraneous.add(path.join(filepath, subfile));
+            if (file[0] === '@') {
+              scopedPaths.add(filepath);
+
+              for (const subfile of await fs.readdir(filepath)) {
+                possibleExtraneous.add(path.join(filepath, subfile));
+              }
+            } else {
+              possibleExtraneous.add(filepath);
             }
-          } else {
-            possibleExtraneous.add(filepath);
           }
         }
+      }
+    };
+
+    await findExtraneousFiles(this.config.lockfileFolder);
+    if (workspaceLayout) {
+      for (const workspaceName of Object.keys(workspaceLayout.workspaces)) {
+        await findExtraneousFiles(workspaceLayout.workspaces[workspaceName].loc);
       }
     }
 
@@ -288,8 +304,13 @@ export default class PackageLinker {
       const stat = await fs.lstat(entryPath);
 
       if (stat.isSymbolicLink()) {
-        const packageName = entry;
-        linkTargets.set(packageName, await fs.readlink(entryPath));
+        try {
+          const entryTarget = await fs.realpath(entryPath);
+          linkTargets.set(entry, entryTarget);
+        } catch (err) {
+          this.reporter.warn(this.reporter.lang('linkTargetMissing', entry));
+          await fs.unlink(entryPath);
+        }
       } else if (stat.isDirectory() && entry[0] === '@') {
         // if the entry is directory beginning with '@', then we're dealing with a package scope, which
         // means we must iterate inside to retrieve the package names it contains
@@ -301,7 +322,13 @@ export default class PackageLinker {
 
           if (stat2.isSymbolicLink()) {
             const packageName = `${scopeName}/${entry2}`;
-            linkTargets.set(packageName, await fs.readlink(entryPath2));
+            try {
+              const entryTarget = await fs.realpath(entryPath2);
+              linkTargets.set(packageName, entryTarget);
+            } catch (err) {
+              this.reporter.warn(this.reporter.lang('linkTargetMissing', packageName));
+              await fs.unlink(entryPath2);
+            }
           }
         }
       }
@@ -318,7 +345,7 @@ export default class PackageLinker {
       if (
         (await fs.lstat(loc)).isSymbolicLink() &&
         linkTargets.has(packageName) &&
-        linkTargets.get(packageName) === (await fs.readlink(loc))
+        linkTargets.get(packageName) === (await fs.realpath(loc))
       ) {
         possibleExtraneous.delete(loc);
         copyQueue.delete(loc);
@@ -381,9 +408,11 @@ export default class PackageLinker {
       await promise.queue(
         flatTree,
         async ([dest, {pkg}]) => {
-          const binLoc = path.join(dest, this.config.getFolder(pkg));
-          await this.linkBinDependencies(pkg, binLoc);
-          tickBin();
+          if (pkg._reference && pkg._reference.location) {
+            const binLoc = path.join(dest, this.config.getFolder(pkg));
+            await this.linkBinDependencies(pkg, binLoc);
+            tickBin();
+          }
         },
         linkBinConcurrency,
       );
@@ -392,8 +421,8 @@ export default class PackageLinker {
       await promise.queue(
         topLevelDependencies,
         async ([dest, pkg]) => {
-          if (pkg.bin && Object.keys(pkg.bin).length) {
-            const binLoc = path.join(this.config.cwd, this.config.getFolder(pkg));
+          if (pkg._reference && pkg._reference.location && pkg.bin && Object.keys(pkg.bin).length) {
+            const binLoc = path.join(this.config.lockfileFolder, this.config.getFolder(pkg));
             await this.linkSelfDependencies(pkg, dest, binLoc);
             tickBin();
           }
@@ -412,7 +441,7 @@ export default class PackageLinker {
     for (const [dest, {pkg, isDirectRequire}] of flatTree) {
       const {name} = pkg;
 
-      if (!linksToCreate.has(name) || isDirectRequire) {
+      if (isDirectRequire || (this.topLevelBinLinking && !linksToCreate.has(name))) {
         linksToCreate.set(name, [dest, pkg]);
       }
     }
@@ -422,34 +451,70 @@ export default class PackageLinker {
 
   resolvePeerModules() {
     for (const pkg of this.resolver.getManifests()) {
-      this._resolvePeerModules(pkg);
-    }
-  }
+      const peerDeps = pkg.peerDependencies;
+      if (!peerDeps) {
+        continue;
+      }
+      const ref = pkg._reference;
+      invariant(ref, 'Package reference is missing');
+      // TODO: We are taking the "shortest" ref tree but there may be multiple ref trees with the same length
+      const refTree = ref.requests.map(req => req.parentNames).sort((arr1, arr2) => arr1.length - arr2.length)[0];
 
-  _resolvePeerModules(pkg: Manifest) {
-    const peerDeps = pkg.peerDependencies;
-    if (!peerDeps) {
-      return;
-    }
+      const getLevelDistance = pkgRef => {
+        let minDistance = Infinity;
+        for (const req of pkgRef.requests) {
+          const distance = refTree.length - req.parentNames.length;
 
-    const ref = pkg._reference;
-    invariant(ref, 'Package reference is missing');
+          if (distance >= 0 && distance < minDistance && req.parentNames.every((name, idx) => name === refTree[idx])) {
+            minDistance = distance;
+          }
+        }
 
-    for (const name in peerDeps) {
-      const range = peerDeps[name];
-      const pkgs = this.resolver.getAllInfoForPackageName(name);
-      const found = pkgs.find(pkg => {
-        const {root, version} = pkg._reference || {};
-        return root && this._satisfiesPeerDependency(range, version);
-      });
-      const foundPattern = found && found._reference && found._reference.patterns;
+        return minDistance;
+      };
 
-      if (foundPattern) {
-        ref.addDependencies(foundPattern);
-      } else {
-        const depError = pkgs.length > 0 ? 'incorrectPeer' : 'unmetPeer';
-        const [pkgHuman, depHuman] = [`${pkg.name}@${pkg.version}`, `${name}@${range}`];
-        this.reporter.warn(this.reporter.lang(depError, pkgHuman, depHuman));
+      for (const peerDepName in peerDeps) {
+        const range = peerDeps[peerDepName];
+        const peerPkgs = this.resolver.getAllInfoForPackageName(peerDepName);
+
+        let peerError = 'unmetPeer';
+        let resolvedLevelDistance = Infinity;
+        let resolvedPeerPkg;
+        for (const peerPkg of peerPkgs) {
+          const peerPkgRef = peerPkg._reference;
+          if (!(peerPkgRef && peerPkgRef.patterns)) {
+            continue;
+          }
+          const levelDistance = getLevelDistance(peerPkgRef);
+          if (isFinite(levelDistance) && levelDistance < resolvedLevelDistance) {
+            if (this._satisfiesPeerDependency(range, peerPkgRef.version)) {
+              resolvedLevelDistance = levelDistance;
+              resolvedPeerPkg = peerPkgRef;
+            } else {
+              peerError = 'incorrectPeer';
+            }
+          }
+        }
+
+        if (resolvedPeerPkg) {
+          ref.addDependencies(resolvedPeerPkg.patterns);
+          this.reporter.verbose(
+            this.reporter.lang(
+              'selectedPeer',
+              `${pkg.name}@${pkg.version}`,
+              `${peerDepName}@${resolvedPeerPkg.version}`,
+              resolvedPeerPkg.level,
+            ),
+          );
+        } else {
+          this.reporter.warn(
+            this.reporter.lang(
+              peerError,
+              `${refTree.join(' > ')} > ${pkg.name}@${pkg.version}`,
+              `${peerDepName}@${range}`,
+            ),
+          );
+        }
       }
     }
   }
